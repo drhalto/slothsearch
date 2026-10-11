@@ -7,7 +7,7 @@ repos, Settings pages, math and unit conversions, and web addresses all come bac
 list, as you type. Files come from [Everything](https://www.voidtools.com/), so the whole disk is
 searched in about 50 ms. The mascot is a sloth. It is not a sloth.
 
-Website: **https://drhalto.github.io/slothsearch/**
+Website: **https://slothsearch.drhalto.com**
 
 ![SlothSearch with a web address typed and a live preview of the page in the side pane](assets/screenshot.png)
 
