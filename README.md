@@ -7,6 +7,8 @@ repos, Settings pages, math and unit conversions, and web addresses all come bac
 list, as you type. Files come from [Everything](https://www.voidtools.com/), so the whole disk is
 searched in about 50 ms. The mascot is a sloth. It is not a sloth.
 
+Website: **https://drhalto.github.io/slothsearch/**
+
 ![SlothSearch with a web address typed and a live preview of the page in the side pane](assets/screenshot.png)
 
 ## Install
@@ -85,5 +87,10 @@ file results (node_modules, build caches, AppData...). Changes apply the next ti
 
 ## Brand
 
-The sloth was generated with gpt-image-2 (via Codex) on flat magenta, then keyed and packed by
-`python scripts/make-brand.py` into the app icon and the two images the UI embeds.
+The sloth was generated with gpt-image-2 (via Codex) on flat magenta. `python scripts/make-brand.py`
+keys it out and builds the app icon, the two images the UI embeds, and the website's icons and
+social card. The website's vector sloth (`docs/img/sloth.svg`) was traced in VectorCraft from the
+art flattened to 14 colours at 2x (Image Trace: colour, abutting, paths 70, corners 50, noise 8),
+then `scripts/clean-trace.py` swaps the background and outline shapes for one silhouette,
+VectorCraft's Simplify trims anchors, and `scripts/compact-svg.py --clip` shrinks the path data.
+The editable source is `assets/brand/sloth.vectorcraft`.

@@ -135,7 +135,10 @@ impl eframe::App for SlothSearch {
         }
 
         let pointer = ctx.input(|i| i.pointer.hover_pos());
-        let moved = pointer.is_some() && pointer != self.last_pointer;
+        // A pointer that was already resting where the launcher opened hasn't moved: only
+        // real movement selects the row under it.
+        let moved = self.pointer_seen && pointer.is_some() && pointer != self.last_pointer;
+        self.pointer_seen |= pointer.is_some();
         self.last_pointer = pointer;
 
         let t = ctx.animate_bool_with_time(egui::Id::new("show"), true, 0.09);

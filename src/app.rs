@@ -135,6 +135,8 @@ pub struct SlothSearch {
     user_moved: bool,
     scroll_to_selected: bool,
     last_pointer: Option<Pos2>,
+    /// Whether the pointer has been seen since the launcher opened.
+    pointer_seen: bool,
 
     req_id: u64,
     files: Vec<Result<Results, Error>>,
@@ -248,6 +250,7 @@ impl SlothSearch {
             user_moved: false,
             scroll_to_selected: false,
             last_pointer: None,
+            pointer_seen: false,
             req_id: 0,
             files: Vec::new(),
             files_ms: 0,
@@ -353,6 +356,7 @@ impl SlothSearch {
                 self.visible = true;
                 self.hiding = 0;
                 self.shown_at = Instant::now();
+                self.pointer_seen = false;
                 self.had_focus = false;
                 self.focus_input = true;
                 self.actions_open = false;

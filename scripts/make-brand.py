@@ -95,6 +95,52 @@ def write_rgba(im: Image.Image, size: int, path: Path):
     path.write_bytes(im.resize((size, size), Image.LANCZOS).tobytes())
 
 
+def web_assets(head_sq: Image.Image, face_sq: Image.Image, mascot: Image.Image):
+    """Favicons and the 1200x630 social card for the site in docs/."""
+    from PIL import ImageDraw, ImageFilter, ImageFont
+
+    docs = ROOT / "docs"
+    (docs / "img").mkdir(parents=True, exist_ok=True)
+    face_sq.resize((64, 64), Image.LANCZOS).save(docs / "favicon.png", optimize=True)
+    # Touch icons get a tile: iOS and Android show transparency as black.
+    for size, path in ((180, docs / "apple-touch-icon.png"), (192, docs / "img" / "icon-192.png")):
+        tile = Image.new("RGBA", (size, size), (38, 30, 72, 255))
+        art = head_sq.resize((round(size * 0.86),) * 2, Image.LANCZOS)
+        tile.alpha_composite(art, ((size - art.width) // 2, size - art.height))
+        tile.save(path, optimize=True)
+
+    W, H = 1200, 630
+    card = Image.new("RGBA", (W, H))
+    d = ImageDraw.Draw(card)
+    for y in range(H):  # deep indigo to near-black
+        t = y / (H - 1)
+        d.line([(0, y), (W, y)], fill=(round(30 - 12 * t), round(24 - 9 * t), round(56 - 26 * t), 255))
+    # A soft amber glow behind the sloth.
+    glow = Image.new("L", (W, H), 0)
+    ImageDraw.Draw(glow).ellipse([700, 40, 1260, 600], fill=70)
+    amber = Image.new("RGBA", (W, H), (246, 184, 64, 0))
+    amber.putalpha(glow.filter(ImageFilter.GaussianBlur(90)))
+    card.alpha_composite(amber)
+    m = mascot.crop(mascot.getbbox())
+    m = m.resize((round(m.width * 520 / m.height), 520), Image.LANCZOS)
+    card.alpha_composite(m, (W - m.width - 70, (H - m.height) // 2 + 8))
+    fonts = ROOT / "assets" / "fonts"
+    title = ImageFont.truetype(str(fonts / "Geist-SemiBold.ttf"), 88)
+    body = ImageFont.truetype(str(fonts / "Geist-Regular.ttf"), 34)
+    mono = ImageFont.truetype(str(fonts / "GeistMono-Medium.ttf"), 30)
+    d = ImageDraw.Draw(card)
+    d.text((80, 150), "SlothSearch", font=title, fill=(246, 241, 252))
+    d.text((84, 270), "Spotlight for Windows.", font=body, fill=(214, 206, 232))
+    d.text((84, 318), "Everything, as you type.", font=body, fill=(214, 206, 232))
+    x = 84
+    for k in ("Alt", "Space"):
+        w = d.textlength(k, font=mono) + 36
+        d.rounded_rectangle([x, 410, x + w, 466], radius=12, fill=(48, 40, 82), outline=(92, 80, 150), width=2)
+        d.text((x + 18, 421), k, font=mono, fill=(246, 184, 64))
+        x += w + 14
+    card.convert("RGB").save(docs / "img" / "og.png", optimize=True)
+
+
 def main():
     mascot = key_out(BRAND / "sloth-mascot.png")
     head = key_out(BRAND / "sloth-icon.png")
@@ -110,6 +156,7 @@ def main():
 
     write_rgba(face_sq, 64, ROOT / "assets" / "sloth-head-64.rgba")
     write_rgba(square(mascot), 256, ROOT / "assets" / "sloth-mascot-256.rgba")
+    web_assets(head_sq, face_sq, mascot)
     print("brand assets written")
 
 

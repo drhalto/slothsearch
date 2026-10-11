@@ -1,3 +1,7 @@
 *.rgba binary
 *.ico binary
 *.png binary
+*.webp binary
+*.woff2 binary
+*.ttf binary
+*.vectorcraft binary

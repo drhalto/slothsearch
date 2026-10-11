@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SlothSearch — Spotlight for Windows</title>
+<meta name="description" content="SlothSearch is a free, open-source launcher for Windows. Press Alt+Space to find apps, every file on your disk, open windows, git repos, Settings pages and math as you type.">
+<meta name="theme-color" content="#12101B">
+<meta name="color-scheme" content="dark">
+<link rel="canonical" href="https://slothsearch.drhalto.com/">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="SlothSearch — Spotlight for Windows">
+<meta property="og:description" content="Press Alt+Space. Apps, every file on your disk, open windows, repos and math, as you type. Free and open source.">
+<meta property="og:url" content="https://slothsearch.drhalto.com/">
+<meta property="og:image" content="https://slothsearch.drhalto.com/img/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://slothsearch.drhalto.com/img/og.png">
+<style>
+@font-face { font-family: Geist; src: url(fonts/Geist-Regular.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: Geist; src: url(fonts/Geist-Medium.woff2) format("woff2"); font-weight: 500; font-display: swap; }
+@font-face { font-family: Geist; src: url(fonts/Geist-SemiBold.woff2) format("woff2"); font-weight: 600; font-display: swap; }
+@font-face { font-family: "Geist Mono"; src: url(fonts/GeistMono-Regular.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Geist Mono"; src: url(fonts/GeistMono-Medium.woff2) format("woff2"); font-weight: 500; font-display: swap; }
+
+:root {
+  --bg: #12101B;
+  --surface: #1A1726;
+  --surface-hi: #221E32;
+  --surface-2: #2A2540;
+  --border: #2A2540;
+  --border-hi: #3B3457;
+  --text: #F1EDF8;
+  --text-2: #BBB4CE;
+  --text-3: #A29BB6;
+  --amber: #F6B840;
+  --amber-hi: #FFCB63;
+  --amber-ink: #241603;
+  --indigo: #9A88F5;
+  --indigo-deep: #4E3EA8;
+  --fur: #C68A55;
+  --cream: #F9DCA9;
+  --radius: 14px;
+  --sans: Geist, "Segoe UI", system-ui, sans-serif;
+  --mono: "Geist Mono", Consolas, ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation: none !important; transition: none !important; } }
+body { margin: 0; background: var(--bg); color: var(--text); font: 400 17px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+img { max-width: 100%; height: auto; display: block; }
+a { color: var(--indigo); text-underline-offset: 3px; }
+a:hover { color: #B9ACFA; }
+:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; border-radius: 6px; }
+code, pre, kbd { font-family: var(--mono); }
+/* Long paths like %APPDATA%\SlothSearch\config.toml may break anywhere on phones. */
+code { overflow-wrap: anywhere; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+.skip { position: absolute; left: -999px; top: 12px; background: var(--amber); color: var(--amber-ink); padding: 8px 14px; border-radius: 8px; z-index: 10; font-weight: 600; }
+.skip:focus { left: 16px; }
+
+/* ---- nav ---- */
+header.site { position: sticky; top: 0; z-index: 5; background: rgba(18, 16, 27, 0.82); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+.nav { display: flex; align-items: center; gap: 24px; height: 64px; }
+.brand { display: flex; align-items: center; gap: 10px; color: var(--text); text-decoration: none; font-weight: 600; font-size: 18px; }
+.brand img { width: 32px; height: 32px; border-radius: 8px; }
+.nav ul { display: flex; gap: 22px; list-style: none; margin: 0 0 0 auto; padding: 0; }
+.nav ul a { color: var(--text-2); text-decoration: none; font-size: 15px; font-weight: 500; }
+.nav ul a:hover { color: var(--text); }
+.nav .gh { display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border: 1px solid var(--border-hi); border-radius: 10px; color: var(--text); text-decoration: none; font-size: 14px; font-weight: 500; }
+.nav .gh:hover { background: var(--surface-hi); color: var(--text); }
+@media (max-width: 760px) { .nav ul { display: none; } .nav .gh { margin-left: auto; } }
+
+/* ---- hero ---- */
+.hero { position: relative; padding: 72px 0 40px; overflow: hidden; }
+.hero::before { content: ""; position: absolute; right: -8%; top: -18%; width: 760px; height: 760px; border-radius: 50%; background: radial-gradient(circle, rgba(246, 184, 64, 0.16), transparent 60%); pointer-events: none; }
+.hero::after { content: ""; position: absolute; left: -16%; bottom: -40%; width: 640px; height: 640px; border-radius: 50%; background: radial-gradient(circle, rgba(78, 62, 168, 0.30), transparent 62%); pointer-events: none; }
+.hero-grid { position: relative; z-index: 1; display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 40px; align-items: center; }
+.eyebrow { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border: 1px solid var(--border-hi); border-radius: 999px; color: var(--text-2); font-size: 14px; font-weight: 500; background: var(--surface); }
+.eyebrow .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 4px rgba(246, 184, 64, 0.16); }
+h1 { font-size: clamp(40px, 6vw, 66px); line-height: 1.04; letter-spacing: -0.03em; margin: 20px 0 18px; font-weight: 600; text-wrap: balance; }
+h1 em { font-style: normal; color: var(--amber); }
+.lede { font-size: 20px; color: var(--text-2); max-width: 38ch; margin: 0 0 30px; }
+.lede kbd { font-size: 16px; }
+.ctas { display: flex; flex-wrap: wrap; gap: 12px; }
+.btn { display: inline-flex; align-items: center; gap: 10px; padding: 13px 20px; border-radius: 12px; font-weight: 600; font-size: 16px; text-decoration: none; border: 1px solid transparent; cursor: pointer; }
+.btn-primary { background: var(--amber); color: var(--amber-ink); }
+.btn-primary:hover { background: var(--amber-hi); color: var(--amber-ink); }
+.btn-ghost { background: var(--surface); color: var(--text); border-color: var(--border-hi); }
+.btn-ghost:hover { background: var(--surface-hi); color: var(--text); }
+.btn svg { width: 18px; height: 18px; }
+.meta { margin-top: 22px; color: var(--text-3); font-size: 14px; }
+.meta span + span::before { content: "·"; margin: 0 10px; }
+.mascot { position: relative; justify-self: center; width: min(390px, 100%); }
+/* The sloth turns toward your cursor... eventually. */
+.sloth { transform-origin: 50% 85%; transition: transform 2.8s cubic-bezier(0.22, 0.7, 0.2, 1); filter: drop-shadow(0 30px 40px rgba(0, 0, 0, 0.45)); }
+.sloth img { width: 100%; height: auto; animation: breathe 7s ease-in-out infinite; transform-origin: 50% 100%; }
+@keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.012, 1.018); } }
+.bubble { position: absolute; right: -6%; top: -9%; margin: 0; font: 500 13px/1.35 var(--sans); padding: 8px 12px; border-radius: 12px 12px 12px 4px; background: var(--surface-hi); border: 1px solid var(--border-hi); color: var(--text-2); box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35); max-width: 21ch; }
+@media (max-width: 900px) {
+  .hero-grid { grid-template-columns: 1fr; }
+  .mascot { width: min(260px, 66%); order: -1; margin-top: 28px; }
+  .bubble { right: -30%; top: -12%; }
+}
+@media (max-width: 520px) { .bubble { display: none; } }
+
+/* ---- screenshots ---- */
+/* width: auto margins alone would shrink a grid item to its content, and a 100%-wide
+   image inside that collapses to nothing. */
+.shot { width: 100%; margin: 0 auto; filter: drop-shadow(0 34px 60px rgba(0, 0, 0, 0.55)); }
+.shot img { width: 100%; }
+.hero-shot { margin-top: 36px; }
+.caption { text-align: center; color: var(--text-3); font-size: 14px; margin: 16px auto 0; max-width: 70ch; }
+
+/* ---- sections ---- */
+section { padding: 96px 0 0; }
+.kicker { color: var(--amber); font: 600 13px var(--sans); letter-spacing: 0.12em; text-transform: uppercase; margin: 0 0 10px; }
+h2 { font-size: clamp(30px, 4vw, 42px); letter-spacing: -0.02em; line-height: 1.12; margin: 0 0 14px; font-weight: 600; text-wrap: balance; }
+.sub { color: var(--text-2); max-width: 62ch; margin: 0 0 40px; font-size: 18px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
+.card h3 { margin: 0 0 8px; font-size: 18px; font-weight: 600; }
+.card p { margin: 0; color: var(--text-2); font-size: 16px; }
+
+.problems { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.problems .label { font: 600 12px var(--sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); margin: 0 0 10px; }
+.answer { margin-top: 18px; display: flex; gap: 14px; align-items: center; padding: 18px 22px; border-radius: var(--radius); border: 1px solid rgba(246, 184, 64, 0.35); background: linear-gradient(90deg, rgba(246, 184, 64, 0.10), rgba(78, 62, 168, 0.12)); color: var(--text); font-weight: 500; }
+.answer img { width: 34px; height: 34px; flex: none; }
+@media (max-width: 860px) { .problems { grid-template-columns: 1fr; } }
+
+.features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.feature .ico { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; margin-bottom: 16px; background: var(--surface-2); color: var(--cream); }
+.feature .ico svg { width: 20px; height: 20px; }
+.feature code { font-size: 14px; color: var(--cream); }
+@media (max-width: 900px) { .features { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 620px) { .features { grid-template-columns: 1fr; } }
+
+.tour { display: grid; gap: 72px; }
+.row { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: 40px; align-items: center; }
+.row:nth-child(even) { grid-template-columns: 1.2fr 0.8fr; }
+.row:nth-child(even) .copy-col { order: 2; }
+.row h3 { font-size: 26px; letter-spacing: -0.015em; line-height: 1.2; margin: 0 0 12px; font-weight: 600; }
+.row p { color: var(--text-2); margin: 0 0 12px; }
+@media (max-width: 900px) { .row, .row:nth-child(even) { grid-template-columns: 1fr; } .row:nth-child(even) .copy-col { order: 0; } }
+
+table.keys { width: 100%; border-collapse: collapse; font-size: 16px; }
+table.keys th { text-align: left; color: var(--text-3); font: 600 12px var(--sans); letter-spacing: 0.1em; text-transform: uppercase; padding: 0 0 10px; }
+table.keys td { padding: 12px 0; border-top: 1px solid var(--border); vertical-align: top; color: var(--text-2); }
+table.keys td:first-child { padding-right: 18px; white-space: nowrap; width: 1%; }
+.keys-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 40px; }
+@media (max-width: 860px) { .keys-grid { grid-template-columns: 1fr; } }
+kbd { font-size: 13px; padding: 1px 7px; border: 1px solid var(--border-hi); border-bottom-width: 2px; border-radius: 6px; background: var(--surface-hi); color: var(--text); white-space: nowrap; }
+
+.steps { list-style: none; counter-reset: step; padding: 0; margin: 0; display: grid; gap: 22px; max-width: 760px; }
+.steps li { counter-increment: step; display: grid; grid-template-columns: 40px 1fr; gap: 16px; align-items: start; }
+.steps li::before { content: counter(step); width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: var(--amber); color: var(--amber-ink); font-weight: 600; }
+.steps h3 { margin: 4px 0 6px; font-size: 18px; }
+.steps p { margin: 0 0 10px; color: var(--text-2); font-size: 16px; }
+.code { display: flex; align-items: flex-start; gap: 12px; background: #0C0A13; border: 1px solid var(--border-hi); border-radius: 10px; padding: 12px 12px 12px 16px; font: 14px/1.7 var(--mono); color: var(--text); }
+.code code { white-space: pre; flex: 1; min-width: 0; overflow-x: auto; }
+.code .p { color: var(--amber); user-select: none; }
+.copy { flex: none; border: 1px solid var(--border-hi); background: var(--surface-hi); color: var(--text-2); border-radius: 8px; padding: 6px 10px; font: 500 13px var(--sans); cursor: pointer; }
+.copy:hover { color: var(--text); background: var(--surface-2); }
+.note { color: var(--text-3); font-size: 15px; margin-top: 22px; max-width: 760px; }
+.note code { color: var(--text-2); font-size: 14px; }
+
+.privacy ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 12px; max-width: 760px; }
+.privacy li { display: grid; grid-template-columns: 22px 1fr; gap: 12px; color: var(--text-2); }
+.privacy li svg { width: 20px; height: 20px; color: var(--amber); margin-top: 3px; }
+.privacy strong { color: var(--text); font-weight: 600; }
+
+.why { display: grid; grid-template-columns: 1fr 1.1fr; gap: 36px; align-items: center; background: linear-gradient(135deg, rgba(246, 184, 64, 0.08), rgba(78, 62, 168, 0.14)); border: 1px solid var(--border-hi); border-radius: 20px; padding: 32px; }
+.why h2 { font-size: 32px; }
+.why p { color: var(--text-2); margin: 0 0 12px; }
+@media (max-width: 860px) { .why { grid-template-columns: 1fr; padding: 24px; } }
+
+footer { margin-top: 96px; border-top: 1px solid var(--border); padding: 32px 0 48px; color: var(--text-3); font-size: 14px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 28px; align-items: center; justify-content: space-between; }
+footer a { color: var(--text-2); }
+.hero-grid > *, .problems > *, .features > *, .row > *, .steps li > *, .keys-grid > * { min-width: 0; }
+@media (max-width: 620px) {
+  .wrap { padding: 0 16px; }
+  section { padding-top: 72px; }
+  table.keys td:first-child { white-space: normal; }
+}
+</style>
+</head>
+<body id="top">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site">
+  <nav class="wrap nav" aria-label="Main">
+    <a class="brand" href="#top"><img src="img/icon-192.png" alt="" width="32" height="32">SlothSearch</a>
+    <ul>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#keys">Keys</a></li>
+      <li><a href="#install">Install</a></li>
+      <li><a href="#privacy">Privacy</a></li>
+    </ul>
+    <a class="gh" href="https://github.com/drhalto/slothsearch">
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+  </nav>
+</header>
+
+<main id="main">
+  <div class="hero">
+    <div class="wrap">
+      <div class="hero-grid">
+        <div>
+          <span class="eyebrow"><span class="dot" aria-hidden="true"></span>Free and open source · Windows 10 &amp; 11</span>
+          <h1>Everything on your PC, <em>one keystroke away</em>.</h1>
+          <p class="lede">Press <kbd>Alt</kbd> <kbd>Space</kbd> and start typing. SlothSearch finds apps, every file on your disk, open windows, git repos, Settings pages and math in about 50 milliseconds. The sloth is just for show.</p>
+          <div class="ctas">
+            <a class="btn btn-primary" href="https://github.com/drhalto/slothsearch">
+              <svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+              Get it on GitHub
+            </a>
+            <a class="btn btn-ghost" href="#install">How to install</a>
+          </div>
+          <p class="meta"><span>Written in Rust</span><span>Files through Everything</span><span>MIT license</span></p>
+        </div>
+        <div class="mascot">
+          <div class="sloth" id="sloth"><img src="img/sloth.svg" alt="SlothSearch's mascot: a smug sloth in amber aviator goggles, holding up a magnifying glass" width="795" height="969"></div>
+          <p class="bubble" aria-hidden="true">Turning to look at your cursor. Give him a second.</p>
+        </div>
+      </div>
+
+      <figure class="shot hero-shot" style="max-width: 980px; margin-left: auto; margin-right: auto;">
+        <img src="img/shot-preview.webp" width="1230" height="750" alt="The SlothSearch launcher with devduck.drhalto.com typed in. The left column offers to open the link or search the web; the right column shows the live page.">
+      </figure>
+      <p class="caption">Type a web address and the page renders beside your results. Files get the same treatment: HTML, Markdown, PDF, images and code.</p>
+    </div>
+  </div>
+
+  <section aria-labelledby="problem-h">
+    <div class="wrap">
+      <p class="kicker">The problem</p>
+      <h2 id="problem-h">Windows search is the slow one</h2>
+      <p class="sub">Three places to look for things, and none of them is quick.</p>
+      <div class="problems">
+        <div class="card">
+          <p class="label">Start menu</p>
+          <h3>It searches the web first</h3>
+          <p>Type a file name and you get web suggestions. Files outside your libraries rarely show up at all.</p>
+        </div>
+        <div class="card">
+          <p class="label">Explorer</p>
+          <h3>Its search box crawls</h3>
+          <p>It waits on the Windows Search index, and it can't be pointed at Everything, the tool that already knows every file on your disk.</p>
+        </div>
+        <div class="card">
+          <p class="label">Alt+Tab</p>
+          <h3>You can't type into it</h3>
+          <p>With twenty windows open, you scan thumbnails instead of typing the name of the one you want.</p>
+        </div>
+      </div>
+      <p class="answer"><img src="favicon.png" alt="" width="34" height="34">SlothSearch answers all three from one box, as you type.</p>
+    </div>
+  </section>
+
+  <section id="features" aria-labelledby="features-h">
+    <div class="wrap">
+      <p class="kicker">Features</p>
+      <h2 id="features-h">One box for everything you reach for</h2>
+      <p class="sub">Results come back ranked as you type, with the best match on top and the reasons it matched highlighted.</p>
+      <div class="features">
+        <div class="card feature">
+          <div class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 14h6M9 17h4"/></svg></div>
+          <h3>Every file, instantly</h3>
+          <p>Files come from Everything's index, so your whole disk answers in about 50 ms. Dependency and build folders stay out of the way.</p>
+        </div>
+        <div class="card feature">
+          <div class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>
+          <h3>Apps, Store apps included</h3>
+          <p>Everything the Start menu lists, matched by initials too: <code>vsc</code> finds Visual Studio Code.</p>
+        </div>
+        <div class="card feature">
+          <div class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="14" height="12" rx="2"/><path d="M7 7V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-2"/></svg></div>
+          <h3>Alt+Tab you can type into</h3>
+          <p><kbd>Alt</kbd> <kbd>`</kbd> lists your open windows in the order you used them. Type a few letters, press Enter.</p>
+        </div>
+        <div class="card feature">
+          <div class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="2.5"/><path d="m14 15 2 2"/></svg></div>
+          <h3>Starts in your Explorer folder</h3>
+          <p>Open it over an Explorer window and it searches that folder. Enter on a folder moves that same window there.</p>
+        </div>
+        <div class="card feature">
+          <div class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16l-6 7.5V19l-4 1v-7.5z"/></svg></div>
+          <h3>Type filters</h3>
+          <p><code>type:pdf</code>, <code>type:image</code>, <code>type:code</code>, or any extension. On its own, a filter lists the newest of that kind.</p>
+        </div>
+        <div class="card feature">
+          <div class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg></div>
+          <h3>Favorites and recents</h3>
+          <p><kbd>Ctrl</kbd> <kbd>D</kbd> pins anything: apps, web pages, Settings pages, folders, repos. The empty box shows them first, then your last five picks.</p>
+        </div>
+        <div class="card feature">
+          <div class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/><path d="M15 9h3M15 12h3M15 15h2"/></svg></div>
+          <h3>Live previews</h3>
+          <p>Text excerpts, Explorer's thumbnails, and real rendering for HTML, Markdown, SVG and PDF, with page scripts switched off.</p>
+        </div>
+        <div class="card feature">
+          <div class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 12h.01M12 12h.01M16 12h.01M8 16h.01M12 16h.01M16 16h.01"/></svg></div>
+          <h3>Math and units</h3>
+          <p><code>15% of 80</code>, <code>sqrt(2)*100</code>, <code>60 mph to km/h</code>, <code>5 GB to MB</code>. Enter copies the answer.</p>
+        </div>
+        <div class="card feature">
+          <div class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 4 4-4 4"/><path d="M12 17h7"/></svg></div>
+          <h3>Actions on everything</h3>
+          <p><kbd>Ctrl</kbd> <kbd>K</kbd>: open in VS Code or Terminal, start Claude Code in a folder, copy the file itself, run as administrator, show in Explorer.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="tour-h">
+    <div class="wrap">
+      <p class="kicker">A closer look</p>
+      <h2 id="tour-h">It does the obvious thing</h2>
+      <p class="sub">Every screenshot here is the real app on a real PC.</p>
+      <div class="tour">
+        <div class="row">
+          <div class="copy-col">
+            <h3>It knows which folder you're in</h3>
+            <p>Press the hotkey over an Explorer window and the search starts in that folder, shown as a chip. Backspace on an empty box searches everywhere instead.</p>
+            <p>Pick a folder and that same Explorer window goes there. Pick a Markdown file and it renders, images and all.</p>
+          </div>
+          <figure class="shot"><img src="img/shot-explorer.webp" width="1230" height="750" loading="lazy" alt="SlothSearch opened over an Explorer window on the SlothSearch folder: a folder chip in the search bar, README.md as the result, and the README rendered in the preview pane."></figure>
+        </div>
+        <div class="row">
+          <div class="copy-col">
+            <h3><code>type:pdf</code>, then keep typing</h3>
+            <p>Type a filter and a space and it becomes a chip. Pick one from the menu at the right of the search bar, or cycle with <kbd>Ctrl</kbd> <kbd>Tab</kbd>.</p>
+            <p>Works with any extension, too: <code>type:stl</code>, <code>type:blend</code>.</p>
+          </div>
+          <figure class="shot"><img src="img/shot-filter.webp" width="1230" height="750" loading="lazy" alt="An Images filter chip with the search sloth: image files named sloth, with the selected SVG previewed on the right."></figure>
+        </div>
+        <div class="row">
+          <div class="copy-col">
+            <h3>A launchpad you set up</h3>
+            <p>The empty box is yours: the apps, sites, Settings pages and repos you pinned, in the order you want, then whatever you opened last.</p>
+            <p>And it learns. Whatever you pick for a search ranks first for that search next time.</p>
+          </div>
+          <figure class="shot"><img src="img/shot-favorites.webp" width="1230" height="750" loading="lazy" alt="The empty search box showing Favorites: Visual Studio Code, Google Chrome, a web page, a project folder, Display settings and Lock."></figure>
+        </div>
+        <div class="row">
+          <div class="copy-col">
+            <h3>Answers, not just results</h3>
+            <p>Arithmetic, percentages and unit conversions show up as you type. Enter copies the number.</p>
+          </div>
+          <figure class="shot"><img src="img/shot-calc.webp" width="1230" height="750" loading="lazy" alt="60 mph to km/h typed in; the calculator result reads 96.56064 km/h."></figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="keys" aria-labelledby="keys-h">
+    <div class="wrap">
+      <p class="kicker">Keys</p>
+      <h2 id="keys-h">Your hands never leave the keyboard</h2>
+      <p class="sub">Every action has a shortcut, and <kbd>Ctrl</kbd> <kbd>K</kbd> lists them for whatever's selected.</p>
+      <div class="keys-grid">
+        <table class="keys">
+          <thead><tr><th scope="col">Keys</th><th scope="col">Does</th></tr></thead>
+          <tbody>
+            <tr><td><kbd>Alt</kbd> <kbd>Space</kbd></td><td>Open or close SlothSearch</td></tr>
+            <tr><td><kbd>Alt</kbd> <kbd>`</kbd></td><td>Open the window switcher</td></tr>
+            <tr><td><kbd>Enter</kbd></td><td>Open, switch to, run, or copy the answer</td></tr>
+            <tr><td><kbd>Ctrl</kbd> <kbd>Enter</kbd></td><td>Show in Explorer</td></tr>
+            <tr><td><kbd>Ctrl</kbd> <kbd>K</kbd></td><td>All actions for the selected result</td></tr>
+            <tr><td><kbd>Ctrl</kbd> <kbd>D</kbd></td><td>Add to or remove from Favorites</td></tr>
+            <tr><td><kbd>Ctrl</kbd> <kbd>Tab</kbd></td><td>Next type filter</td></tr>
+          </tbody>
+        </table>
+        <table class="keys">
+          <thead><tr><th scope="col">Keys</th><th scope="col">Does</th></tr></thead>
+          <tbody>
+            <tr><td><kbd>Ctrl</kbd> <kbd>E</kbd> / <kbd>T</kbd> / <kbd>L</kbd></td><td>Open in VS Code, Terminal, or start Claude Code there</td></tr>
+            <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>C</kbd></td><td>Copy the path</td></tr>
+            <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>F</kbd></td><td>Copy the file itself, ready to paste</td></tr>
+            <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Enter</kbd></td><td>Run as administrator</td></tr>
+            <tr><td><kbd>Alt</kbd> <kbd>Enter</kbd></td><td>Properties</td></tr>
+            <tr><td><kbd>Ctrl</kbd> <kbd>1</kbd>…<kbd>9</kbd></td><td>Open the nth result</td></tr>
+            <tr><td><kbd>Backspace</kbd></td><td>On an empty box: drop the filter, then the folder</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="install" aria-labelledby="install-h">
+    <div class="wrap">
+      <p class="kicker">Install</p>
+      <h2 id="install-h">Three steps and it's yours</h2>
+      <p class="sub">SlothSearch builds from source on your machine. It runs on Windows 10 and 11.</p>
+      <ol class="steps">
+        <li>
+          <div>
+            <h3>Install Everything</h3>
+            <p>SlothSearch gets its file results from <a href="https://www.voidtools.com/">Everything</a> by voidtools. Install version 1.4 and leave it running; it starts with Windows.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>Install Rust</h3>
+            <p>Get <a href="https://rustup.rs/">rustup</a> and take the defaults (the MSVC toolchain).</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>Build and install SlothSearch</h3>
+            <p>In PowerShell:</p>
+            <div class="code"><code><span class="p">&gt; </span>git clone https://github.com/drhalto/slothsearch
+<span class="p">&gt; </span>cd slothsearch
+<span class="p">&gt; </span>.\scripts\install.ps1</code><button class="copy" type="button" data-copy="git clone https://github.com/drhalto/slothsearch&#10;cd slothsearch&#10;.\scripts\install.ps1">Copy</button></div>
+            <p style="margin-top: 12px;">It builds a release, installs to <code>%LOCALAPPDATA%\Programs\SlothSearch</code>, starts at login, and puts a sloth in your tray. Press <kbd>Alt</kbd> <kbd>Space</kbd>.</p>
+          </div>
+        </li>
+      </ol>
+      <p class="note">Run the same script to update. <code>.\scripts\install.ps1 -Uninstall</code> removes it and keeps your settings. Hotkeys, the web search engine, theme and excluded folders live in <code>%APPDATA%\SlothSearch\config.toml</code>, which opens from the launcher with <kbd>Ctrl</kbd> <kbd>,</kbd>.</p>
+    </div>
+  </section>
+
+  <section id="privacy" class="privacy" aria-labelledby="privacy-h">
+    <div class="wrap">
+      <p class="kicker">Privacy</p>
+      <h2 id="privacy-h">It stays on your PC</h2>
+      <p class="sub">A search box sees everything you type, so here's exactly where that goes.</p>
+      <ul>
+        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span><strong>No accounts, no telemetry.</strong> Nothing phones home.</span></li>
+        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span><strong>Searches stay local.</strong> File queries go to Everything on your own machine, as Windows messages.</span></li>
+        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span><strong>The network only comes up when you ask.</strong> Opening a web search, or previewing a web address you typed.</span></li>
+        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span><strong>File previews can't run code.</strong> HTML, SVG and PDF previews open with scripts off.</span></li>
+        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span><strong>Your data is plain files.</strong> Settings, history and favorites live in <code>%APPDATA%\SlothSearch</code>; delete them any time.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section aria-labelledby="why-h">
+    <div class="wrap">
+      <div class="why">
+        <figure class="shot"><img src="img/shot-nothing.webp" width="1230" height="750" decoding="async" alt="A search with no matches: the sloth sits in the results area above the words No results, I looked everywhere. Quickly, for once."></figure>
+        <div>
+          <h2 id="why-h">Why a sloth?</h2>
+          <p>Because a search box this fast deserved a mascot that isn't. SlothSearch answers in about 50 milliseconds; the sloth looks like he took the afternoon.</p>
+          <p>He only shows up when nothing matches, and he's honest about it.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>SlothSearch · <a href="https://github.com/drhalto/slothsearch/blob/main/LICENSE">MIT license</a> · made by <a href="https://github.com/drhalto">drhalto</a></span>
+    <span>Also from drhalto: <a href="https://devduck.drhalto.com/">DevDuck</a>, every dev server on your PC</span>
+  </div>
+</footer>
+
+<script>
+// The sloth turns toward your cursor, at sloth speed (the CSS transition does the slow part).
+(() => {
+  const sloth = document.getElementById("sloth");
+  if (!sloth || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  let raf = 0;
+  addEventListener("pointermove", (e) => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      const r = sloth.getBoundingClientRect();
+      const dx = (e.clientX - (r.left + r.width / 2)) / innerWidth;
+      const dy = (e.clientY - (r.top + r.height * 0.3)) / innerHeight;
+      const turn = Math.max(-1, Math.min(1, dx * 2));
+      const nod = Math.max(-1, Math.min(1, dy * 2));
+      sloth.style.transform = `rotate(${(turn * 6).toFixed(2)}deg) translate(${(turn * 8).toFixed(1)}px, ${(nod * 4).toFixed(1)}px)`;
+    });
+  }, { passive: true });
+})();
+
+// Copy buttons.
+for (const b of document.querySelectorAll(".copy")) {
+  b.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(b.dataset.copy);
+      b.textContent = "Copied";
+    } catch {
+      b.textContent = "Select and copy";
+    }
+    setTimeout(() => (b.textContent = "Copy"), 1800);
+  });
+}
+</script>
+</body>
+</html>
