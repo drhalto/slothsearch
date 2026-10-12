@@ -299,7 +299,8 @@ impl Engine {
             let base = format!("\"{}\\\"", s.path.trim_end_matches('\\'));
             return vec![Search { text: format!("{base} {q} {remote}"), max: 1500, sort: date }];
         }
-        if q.is_empty() || calc::eval(q).is_some_and(|_| !q.chars().any(char::is_alphabetic)) {
+        // Math and colors answer themselves (and `#hex` is a slow, empty Everything query).
+        if q.is_empty() || calc::eval(q).is_some_and(|_| !q.chars().any(char::is_alphabetic)) || crate::colorpick::parse(q).is_some() {
             return Vec::new();
         }
         // Plenty of hits, because exclusions are applied after they come back.
@@ -664,6 +665,10 @@ impl Engine {
             let mut item = Item::new(Kind::Calc, a.display.clone(), a.detail, Icon::Glyph(glyph::CALC), Target::Calc { copy: a.copy });
             item.score = 1000.0;
             out.push(Section { title: "Calculator".into(), items: vec![item] });
+        }
+        if let Some(c) = crate::colorpick::parse(q) {
+            let item = Item::new(Kind::Color, crate::colorpick::hex(c), crate::colorpick::rgb(c), Icon::Swatch(c), Target::Color { rgb: c });
+            out.push(Section { title: "Color".into(), items: vec![item] });
         }
         if let Some(url) = as_url(q, &self.cfg.link_domains) {
             let item = Item::new(Kind::Url, format!("Open {url}"), "Link", Icon::Glyph(glyph::LINK), Target::Url { url });

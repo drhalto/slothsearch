@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// A quick tool in the footer bar. Each one also has a shortcut, for the keyboard.
+struct Tool {
+    glyph: char,
+    label: &'static str,
+    keys: &'static str,
+    run: fn(&mut SlothSearch),
+}
+
+const TOOLS: &[Tool] = &[Tool { glyph: glyph::EYEDROPPER, label: "Pick a color from the screen", keys: "Ctrl+Shift+P", run: SlothSearch::start_pick }];
+
 impl eframe::App for SlothSearch {
     fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
         [0.0; 4]
@@ -101,6 +111,9 @@ impl eframe::App for SlothSearch {
                 self.hidden_at = Instant::now();
                 self.keys.clear();
                 shell::hide(self.hwnd);
+                if std::mem::take(&mut self.pick_start) {
+                    self.spawn_picker();
+                }
                 return;
             }
             _ => {}
@@ -303,7 +316,10 @@ impl SlothSearch {
                     open_settings();
                     self.begin_hide();
                 }
-                KeyCmd::Combo(c) => self.combo(&c),
+                KeyCmd::Combo(c) => match TOOLS.iter().find(|t| t.keys == c) {
+                    Some(t) => (t.run)(self),
+                    None => self.combo(&c),
+                },
                 _ => {}
             }
         }
@@ -675,6 +691,7 @@ impl SlothSearch {
                 }
             }
             Icon::Glyph(g) => glyph_tile(ui, *g, rect, pal, kind == Kind::Calc),
+            Icon::Swatch(c) => swatch(ui, *c, rect, pal),
         }
     }
 
@@ -755,6 +772,10 @@ impl SlothSearch {
             p.galley(pos2(cx - g.size().x / 2.0, y + 52.0), g, pal.text);
             p.text(pos2(cx, y + 116.0), Align2::CENTER_CENTER, "Enter copies the answer", regular(12.0), pal.faint);
             return;
+        } else if let Target::Color { rgb } = item.target {
+            let box_rect = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), 176.0));
+            swatch(ui, rgb, box_rect, pal);
+            y = box_rect.bottom() + 16.0;
         } else if let Some(lines) = text_lines {
             let box_rect = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), 176.0));
             p.rect_filled(box_rect, 8.0, pal.code_bg);
@@ -860,6 +881,14 @@ impl SlothSearch {
             Target::Web { .. } => rows.push(("Opens", "your default browser".into())),
             Target::Complete { query } => rows.push(("Search", query.trim().to_string())),
             Target::Calc { .. } => {}
+            Target::Color { rgb } => {
+                use crate::colorpick::{contrast, hex, hsl, rgb as rgb_text};
+                rows.push(("HEX", hex(*rgb)));
+                rows.push(("RGB", rgb_text(*rgb)));
+                rows.push(("HSL", hsl(*rgb)));
+                let (w, b) = (contrast(*rgb, [255; 3]), contrast(*rgb, [0; 3]));
+                rows.push(("Contrast", format!("{w:.1}:1 on white \u{00B7} {b:.1}:1 on black")));
+            }
         }
         for (label, value) in rows {
             if y > rect.bottom() - 16.0 {
@@ -959,15 +988,6 @@ impl SlothSearch {
             // '\0' marks the resting state: the sloth instead of a glyph.
             ('\0', text, pal.faint)
         };
-        if g == '\0' {
-            let r = Rect::from_center_size(pos2(left + 7.0, cy), vec2(20.0, 20.0));
-            p.image(self.sloth_head.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-        } else {
-            p.text(pos2(left, cy), Align2::LEFT_CENTER, g.to_string(), icon_font(12.0), color);
-        }
-        let msg = truncated(&text, regular(12.0), color, rect.width() * 0.55);
-        p.galley(pos2(left + 20.0, cy - msg.size().y / 2.0), msg, color);
-
         // Right: what Enter does, and the actions shortcut.
         let mut x = rect.right() - 16.0;
         if let Some(item) = self.selected_item() {
@@ -983,8 +1003,40 @@ impl SlothSearch {
             let g = p.layout_no_wrap(primary, semibold(12.0), pal.text);
             x -= g.size().x + 8.0;
             p.galley(pos2(x, cy - g.size().y / 2.0), g, pal.text);
+            x -= 14.0;
+            p.vline(x, (cy - 8.0)..=(cy + 8.0), Stroke::new(1.0, pal.divider));
+            x -= 10.0;
         }
-        let _ = x;
+
+        // Then the tools, as icon buttons.
+        let mut picked = None;
+        for (i, tool) in TOOLS.iter().enumerate().rev() {
+            let r = Rect::from_min_max(pos2(x - 28.0, cy - 13.0), pos2(x, cy + 13.0));
+            let resp = ui.interact(r, egui::Id::new(("tool", i)), Sense::click());
+            resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, tool.label));
+            let hot = resp.hovered();
+            if hot {
+                p.rect_filled(r, 7.0, pal.selected);
+            }
+            p.text(r.center(), Align2::CENTER_CENTER, tool.glyph.to_string(), icon_font(14.0), if hot { pal.text } else { pal.dim });
+            if resp.on_hover_text(format!("{} \u{00B7} {}", tool.label, tool.keys)).clicked() {
+                picked = Some(tool.run);
+            }
+            x = r.left() - 4.0;
+        }
+        if let Some(run) = picked {
+            run(self);
+        }
+
+        // Left: the status, in whatever room is left.
+        if g == '\0' {
+            let r = Rect::from_center_size(pos2(left + 7.0, cy), vec2(20.0, 20.0));
+            p.image(self.sloth_head.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        } else {
+            p.text(pos2(left, cy), Align2::LEFT_CENTER, g.to_string(), icon_font(12.0), color);
+        }
+        let msg = truncated(&text, regular(12.0), color, (x - 12.0 - (left + 20.0)).max(40.0));
+        p.galley(pos2(left + 20.0, cy - msg.size().y / 2.0), msg, color);
     }
 
     fn actions_menu(&mut self, ui: &mut Ui, panel: Rect, bottom: f32, moved: bool) {
@@ -1111,6 +1163,13 @@ fn glyph_tile(ui: &Ui, g: char, rect: Rect, pal: Palette, accent: bool) {
     let (fill, fg) = if accent { (pal.accent.gamma_multiply(0.85), Color32::WHITE) } else { (pal.tile, pal.text) };
     p.rect_filled(rect, rect.width() * 0.25, fill);
     p.text(rect.center(), Align2::CENTER_CENTER, g.to_string(), icon_font(rect.width() * 0.52), fg);
+}
+
+fn swatch(ui: &Ui, c: [u8; 3], rect: Rect, pal: Palette) {
+    let p = ui.painter();
+    let r = (rect.width() * 0.25).min(10.0);
+    p.rect_filled(rect, r, Color32::from_rgb(c[0], c[1], c[2]));
+    p.rect_stroke(rect, r, Stroke::new(1.0, pal.border), StrokeKind::Inside);
 }
 
 fn truncated(text: &str, font: egui::FontId, color: Color32, max_w: f32) -> std::sync::Arc<egui::Galley> {

@@ -28,6 +28,7 @@ pub enum AppCmd {
     ToggleStartup,
     RestartEverything,
     ClearHistory,
+    PickColor,
 }
 
 pub struct Command {
@@ -61,6 +62,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("emptybin", "Empty Recycle Bin", "trash delete clear", '\u{E74D}', EmptyRecycleBin),
     cmd("darkmode", "Toggle dark mode", "theme light dark appearance", '\u{E790}', ToggleDarkMode),
     cmd("snip", "Take a screenshot", "snip snipping tool capture screen", '\u{E722}', Open("ms-screenclip:")),
+    cmd("colorpick", "Pick a color", "color colour picker eyedropper hex rgb screen pixel", '\u{EF3C}', App(AppCmd::PickColor)),
     // Settings pages
     cmd("set-display", "Display settings", "monitor resolution scale brightness hdr", '\u{E7F4}', Open("ms-settings:display")),
     cmd("set-sound", "Sound settings", "audio volume speakers microphone output input", '\u{E767}', Open("ms-settings:sound")),

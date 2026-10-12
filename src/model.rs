@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Kind {
     Calc,
+    Color,
     Url,
     App,
     Window,
@@ -21,6 +22,7 @@ impl Kind {
     pub fn label(self) -> &'static str {
         match self {
             Kind::Calc => "Calculator",
+            Kind::Color => "Color",
             Kind::Url => "Link",
             Kind::App => "Application",
             Kind::Window => "Window",
@@ -43,6 +45,8 @@ pub enum Target {
     Window { hwnd: isize, exe: String, aumid: Option<String> },
     Command { id: String },
     Calc { copy: String },
+    /// A color typed as `#hex` / `rgb()`, or picked off the screen.
+    Color { rgb: [u8; 3] },
     Url { url: String },
     Web { query: String },
     /// Replace the search text (completing a `type:` filter).
@@ -76,6 +80,8 @@ pub enum Icon {
     Shell(IconKey),
     /// A Segoe Fluent Icons glyph.
     Glyph(char),
+    /// A tile filled with this color.
+    Swatch([u8; 3]),
 }
 
 #[derive(Clone, Debug)]
@@ -123,7 +129,7 @@ pub fn target_key(t: &Target) -> Option<String> {
         Target::Project { path } => format!("project:{}", path.to_lowercase()),
         Target::Command { id } => format!("cmd:{id}"),
         Target::Url { url } => format!("url:{url}"),
-        Target::Window { .. } | Target::Calc { .. } | Target::Web { .. } | Target::Complete { .. } => return None,
+        Target::Window { .. } | Target::Calc { .. } | Target::Color { .. } | Target::Web { .. } | Target::Complete { .. } => return None,
     })
 }
 
@@ -159,4 +165,5 @@ pub mod glyph {
     pub const UP: char = '\u{E74A}';
     pub const DOWN: char = '\u{E74B}';
     pub const RENAME: char = '\u{E8AC}';
+    pub const EYEDROPPER: char = '\u{EF3C}';
 }

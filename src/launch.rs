@@ -28,6 +28,9 @@ pub enum Act {
     RunAsAdmin,
     CopyPath,
     CopyFile,
+    /// A color's other notations (Open copies the hex).
+    CopyRgb,
+    CopyHsl,
     Properties,
     Editor,
     Terminal,
@@ -106,6 +109,11 @@ pub fn actions(item: &Item, scope: Option<&Scope>) -> Vec<Action> {
         }
         Target::Command { .. } => v.push(a(Act::Open, "Run", "Enter", glyph::RETURN)),
         Target::Calc { .. } => v.push(a(Act::Open, "Copy answer", "Enter", glyph::COPY)),
+        Target::Color { .. } => {
+            v.push(a(Act::Open, "Copy HEX", "Enter", glyph::COPY));
+            v.push(a(Act::CopyRgb, "Copy RGB", "Ctrl+R", glyph::COPY));
+            v.push(a(Act::CopyHsl, "Copy HSL", "Ctrl+H", glyph::COPY));
+        }
         Target::Url { url } if url.starts_with("everything:") => v.push(a(Act::Open, "Open in Everything", "Enter", glyph::SEARCH)),
         Target::Url { .. } => {
             v.push(a(Act::Open, "Open in browser", "Enter", glyph::GLOBE));
@@ -168,6 +176,10 @@ pub fn run(act: Act, item: &Item, env: &Env) -> Outcome {
             Some(p) if copy_files(&[p]) => Outcome::Toast("Copied — paste it anywhere".into()),
             _ => Outcome::Error("Clipboard is busy".into()),
         },
+        Act::CopyRgb | Act::CopyHsl => match t {
+            Target::Color { rgb } => copied(&if act == Act::CopyRgb { crate::colorpick::rgb(*rgb) } else { crate::colorpick::hsl(*rgb) }),
+            _ => Outcome::Error("Not a color".into()),
+        },
         Act::Properties => match t.path() {
             Some(p) => done(properties(p)),
             None => Outcome::Error("No properties".into()),
@@ -202,6 +214,10 @@ fn done(ok: bool) -> Outcome {
     if ok { Outcome::Hide } else { Outcome::Error("Windows couldn't open that".into()) }
 }
 
+fn copied(text: &str) -> Outcome {
+    if copy_text(text) { Outcome::Toast(format!("Copied {text}")) } else { Outcome::Error("Clipboard is busy".into()) }
+}
+
 fn dir_of<'a>(t: &Target, p: &'a str) -> &'a str {
     match t {
         Target::Path { folder: false, .. } | Target::App { .. } | Target::Window { .. } => parent(p),
@@ -232,9 +248,8 @@ fn open(item: &Item, env: &Env) -> Outcome {
             Some(c) => run_command(c.run),
             None => Outcome::Error("Unknown command".into()),
         },
-        Target::Calc { copy } => {
-            if copy_text(copy) { Outcome::Toast(format!("Copied {copy}")) } else { Outcome::Error("Clipboard is busy".into()) }
-        }
+        Target::Calc { copy } => copied(copy),
+        Target::Color { rgb } => copied(&crate::colorpick::hex(*rgb)),
         Target::Url { url } => match url.strip_prefix("everything:") {
             Some(search) => {
                 let ok = Command::new("C:\\Program Files\\Everything\\Everything.exe").arg("-search").arg(search).spawn().is_ok();

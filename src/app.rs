@@ -44,6 +44,17 @@ pub enum Msg {
     Icon(IconKey, u32, Option<Image>),
     /// Age in seconds of the newest change Everything knows about; None if it isn't running.
     Health(Option<u64>),
+    /// The color picker closed: the color, or None if it was cancelled.
+    Picked(Option<crate::colorpick::Rgb>),
+}
+
+/// What the launcher showed before it stepped aside for the color picker.
+struct Restore {
+    query: String,
+    filter: Option<Filter>,
+    scope: Option<Scope>,
+    mode: Mode,
+    toast: Option<String>,
 }
 
 enum IconState {
@@ -85,6 +96,9 @@ fn combo(key: Key, m: Modifiers) -> Option<String> {
         Key::ArrowUp => "Up",
         Key::ArrowDown => "Down",
         Key::F2 => "F2",
+        Key::R => "R",
+        Key::H => "H",
+        Key::P => "P",
         _ => return None,
     };
     let mut s = String::new();
@@ -181,6 +195,12 @@ pub struct SlothSearch {
     /// The sloth: a small head for the footer, the full mascot for empty results.
     sloth_head: TextureHandle,
     sloth_mascot: TextureHandle,
+    /// Start the color picker once the launcher is off the screen.
+    pick_start: bool,
+    /// While picking: where to come back to.
+    picking: Option<Restore>,
+    /// Applied on the next show (the picker's way back).
+    restore: Option<Restore>,
 }
 
 impl SlothSearch {
@@ -285,6 +305,9 @@ impl SlothSearch {
             panel_settled: false,
             sloth_head: brand_texture(&ctx, "sloth-head", include_bytes!("../assets/sloth-head-64.rgba"), 64),
             sloth_mascot: brand_texture(&ctx, "sloth-mascot", include_bytes!("../assets/sloth-mascot-256.rgba"), 256),
+            pick_start: false,
+            picking: None,
+            restore: None,
         };
         app.refresh_sources(&ctx, true);
         app
@@ -370,6 +393,15 @@ impl SlothSearch {
                 if let Some(q) = self.demo.take() {
                     self.query = if q == "-" { String::new() } else { q };
                 }
+                if let Some(r) = self.restore.take() {
+                    self.query = r.query;
+                    self.filter = r.filter;
+                    self.scope = r.scope;
+                    self.mode = r.mode;
+                    self.cursor_end = true;
+                    self.select_all = false;
+                    self.toast = r.toast.map(|t| (t, Instant::now(), false));
+                }
             }
             Msg::Shell(ShellEvent::Hide) => self.begin_hide(),
             Msg::Shell(ShellEvent::Tray(TrayCmd::Settings)) => open_settings(),
@@ -411,7 +443,46 @@ impl SlothSearch {
                 self.textures.insert((key, size), state);
             }
             Msg::Health(age) => self.index_age = Some(age),
+            Msg::Picked(color) => {
+                let mut r = self.picking.take().unwrap_or(Restore { query: String::new(), filter: None, scope: None, mode: Mode::All, toast: None });
+                if let Some(c) = color {
+                    // Back with the color as the search, so its other notations are a keypress away.
+                    let hex = crate::colorpick::hex(c);
+                    let toast = if launch::copy_text(&hex) { format!("Copied {hex}") } else { "Clipboard is busy".into() };
+                    r = Restore { query: hex, filter: None, scope: None, mode: Mode::All, toast: Some(toast) };
+                }
+                self.restore = Some(r);
+            }
         }
+    }
+
+    /// Steps the launcher aside and opens the screen color picker.
+    fn start_pick(&mut self) {
+        if self.picking.is_some() {
+            return;
+        }
+        self.picking = Some(Restore {
+            query: self.query.clone(),
+            filter: self.filter.clone(),
+            scope: self.scope.clone(),
+            mode: self.mode,
+            toast: None,
+        });
+        self.pick_start = true;
+        self.begin_hide();
+    }
+
+    /// Runs the picker on its own thread once the launcher is hidden, then shows the
+    /// launcher again (Msg::Picked arrives before the show, so it can set the search).
+    fn spawn_picker(&self) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            // Give DWM a moment to take the launcher off the screen before the capture.
+            std::thread::sleep(Duration::from_millis(120));
+            let color = crate::colorpick::pick();
+            let _ = tx.send(Msg::Picked(color));
+            shell::post_show();
+        });
     }
 
     // -----------------------------------------------------------------------------------
@@ -685,6 +756,7 @@ impl SlothSearch {
                 self.built = None;
                 self.toast = say("History cleared");
             }
+            AppCmd::PickColor => self.start_pick(),
         }
     }
 }

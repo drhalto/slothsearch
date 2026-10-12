@@ -5,6 +5,7 @@
 mod app;
 mod apps;
 mod calc;
+mod colorpick;
 mod commands;
 mod config;
 mod everything;
