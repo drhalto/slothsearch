@@ -416,6 +416,17 @@ pub fn copy_text(s: &str) -> bool {
     with_clipboard(|| set_clipboard_bytes(CF_UNICODETEXT.0 as u32, &bytes))
 }
 
+/// Puts an image on the clipboard: CF_DIB for most apps, plus PNG for the ones that
+/// prefer it (browsers, chat apps).
+pub fn copy_image(dib: &[u8], png: &[u8]) -> bool {
+    let png_format = unsafe { RegisterClipboardFormatW(w!("PNG")) };
+    with_clipboard(|| {
+        let ok = set_clipboard_bytes(windows::Win32::System::Ole::CF_DIB.0 as u32, dib);
+        set_clipboard_bytes(png_format, png);
+        ok
+    })
+}
+
 /// Puts files on the clipboard the way Explorer's Copy does (CF_HDROP + copy effect).
 pub fn copy_files(paths: &[&str]) -> bool {
     const CF_HDROP: u32 = 15;

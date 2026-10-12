@@ -10,7 +10,10 @@ struct Tool {
     run: fn(&mut SlothSearch),
 }
 
-const TOOLS: &[Tool] = &[Tool { glyph: glyph::EYEDROPPER, label: "Pick a color from the screen", keys: "Ctrl+Shift+P", run: SlothSearch::start_pick }];
+const TOOLS: &[Tool] = &[
+    Tool { glyph: glyph::SNIP, label: "Snip part of the screen", keys: "Ctrl+Shift+S", run: SlothSearch::start_snip },
+    Tool { glyph: glyph::EYEDROPPER, label: "Pick a color from the screen", keys: "Ctrl+Shift+P", run: SlothSearch::start_pick },
+];
 
 impl eframe::App for SlothSearch {
     fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
@@ -111,8 +114,8 @@ impl eframe::App for SlothSearch {
                 self.hidden_at = Instant::now();
                 self.keys.clear();
                 shell::hide(self.hwnd);
-                if std::mem::take(&mut self.pick_start) {
-                    self.spawn_picker();
+                if let Some(which) = self.overlay_start.take() {
+                    self.spawn_overlay(which);
                 }
                 return;
             }

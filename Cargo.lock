@@ -2891,6 +2891,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "nucleo-matcher",
+ "png",
  "pulldown-cmark",
  "raw-window-handle",
  "serde",

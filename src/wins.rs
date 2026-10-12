@@ -128,6 +128,21 @@ pub fn list() -> Vec<Win> {
     out
 }
 
+/// The window's visible frame on screen (without the drop shadow), or None while it's
+/// minimized.
+pub fn frame(h: isize) -> Option<windows::Win32::Foundation::RECT> {
+    use windows::Win32::Graphics::Dwm::DWMWA_EXTENDED_FRAME_BOUNDS;
+    let h = hwnd(h);
+    unsafe {
+        if IsIconic(h).as_bool() {
+            return None;
+        }
+        let mut r = windows::Win32::Foundation::RECT::default();
+        DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &mut r as *mut _ as _, size_of::<windows::Win32::Foundation::RECT>() as u32).ok()?;
+        (r.right > r.left && r.bottom > r.top).then_some(r)
+    }
+}
+
 /// Brings a window to the front, restoring it if minimized.
 pub fn activate(h: isize) {
     let h = hwnd(h);

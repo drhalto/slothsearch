@@ -22,6 +22,7 @@ use crate::model::{Icon, IconKey, Item, Kind, Section, Target, glyph};
 use crate::projects::{self, Project};
 use crate::search::Engine;
 use crate::shell::{self, Event as ShellEvent, MARGIN, Mode, TrayCmd, WIN_W};
+use crate::snip::Outcome as Snipped;
 use crate::theme::{self, Palette, icons as icon_font, mono, regular, semibold};
 use crate::util::{extension, human_age, human_size, now_secs, tilde};
 use crate::filters::{self, Filter};
@@ -46,15 +47,31 @@ pub enum Msg {
     Health(Option<u64>),
     /// The color picker closed: the color, or None if it was cancelled.
     Picked(Option<crate::colorpick::Rgb>),
+    /// The snipper closed: None if cancelled, else what it made or what went wrong.
+    Snipped(Option<Result<Snipped, String>>),
 }
 
-/// What the launcher showed before it stepped aside for the color picker.
+/// The screen tools that take over the whole screen while the launcher steps aside.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Overlay {
+    ColorPicker,
+    Snip,
+}
+
+/// What the launcher showed before it stepped aside for a screen tool.
 struct Restore {
     query: String,
     filter: Option<Filter>,
     scope: Option<Scope>,
     mode: Mode,
-    toast: Option<String>,
+    /// A message to show on the way back, and whether it's an error.
+    toast: Option<(String, bool)>,
+}
+
+impl Default for Restore {
+    fn default() -> Restore {
+        Restore { query: String::new(), filter: None, scope: None, mode: Mode::All, toast: None }
+    }
 }
 
 enum IconState {
@@ -99,6 +116,7 @@ fn combo(key: Key, m: Modifiers) -> Option<String> {
         Key::R => "R",
         Key::H => "H",
         Key::P => "P",
+        Key::S => "S",
         _ => return None,
     };
     let mut s = String::new();
@@ -195,11 +213,11 @@ pub struct SlothSearch {
     /// The sloth: a small head for the footer, the full mascot for empty results.
     sloth_head: TextureHandle,
     sloth_mascot: TextureHandle,
-    /// Start the color picker once the launcher is off the screen.
-    pick_start: bool,
-    /// While picking: where to come back to.
-    picking: Option<Restore>,
-    /// Applied on the next show (the picker's way back).
+    /// Start this screen tool once the launcher is off the screen.
+    overlay_start: Option<Overlay>,
+    /// While a screen tool runs: where to come back to.
+    away: Option<Restore>,
+    /// Applied on the next show (a screen tool's way back).
     restore: Option<Restore>,
 }
 
@@ -305,8 +323,8 @@ impl SlothSearch {
             panel_settled: false,
             sloth_head: brand_texture(&ctx, "sloth-head", include_bytes!("../assets/sloth-head-64.rgba"), 64),
             sloth_mascot: brand_texture(&ctx, "sloth-mascot", include_bytes!("../assets/sloth-mascot-256.rgba"), 256),
-            pick_start: false,
-            picking: None,
+            overlay_start: None,
+            away: None,
             restore: None,
         };
         app.refresh_sources(&ctx, true);
@@ -400,7 +418,7 @@ impl SlothSearch {
                     self.mode = r.mode;
                     self.cursor_end = true;
                     self.select_all = false;
-                    self.toast = r.toast.map(|t| (t, Instant::now(), false));
+                    self.toast = r.toast.map(|(t, err)| (t, Instant::now(), err));
                 }
             }
             Msg::Shell(ShellEvent::Hide) => self.begin_hide(),
@@ -444,44 +462,77 @@ impl SlothSearch {
             }
             Msg::Health(age) => self.index_age = Some(age),
             Msg::Picked(color) => {
-                let mut r = self.picking.take().unwrap_or(Restore { query: String::new(), filter: None, scope: None, mode: Mode::All, toast: None });
+                let mut r = self.away.take().unwrap_or_default();
                 if let Some(c) = color {
                     // Back with the color as the search, so its other notations are a keypress away.
                     let hex = crate::colorpick::hex(c);
-                    let toast = if launch::copy_text(&hex) { format!("Copied {hex}") } else { "Clipboard is busy".into() };
-                    r = Restore { query: hex, filter: None, scope: None, mode: Mode::All, toast: Some(toast) };
+                    let toast = if launch::copy_text(&hex) { (format!("Copied {hex}"), false) } else { ("Clipboard is busy".into(), true) };
+                    r = Restore { query: hex, toast: Some(toast), ..Default::default() };
                 }
                 self.restore = Some(r);
             }
+            Msg::Snipped(outcome) => match outcome {
+                // Done: the snip is on the clipboard and the launcher stays away.
+                Some(Ok(Snipped::Image)) => self.away = None,
+                // A recording: back with the new file as the search, ready to open or drag.
+                Some(Ok(Snipped::Video(path))) => {
+                    self.away = None;
+                    let name = crate::util::file_name(&path).to_string();
+                    self.restore = Some(Restore { query: name, toast: Some(("Recording saved and copied".into(), false)), ..Default::default() });
+                }
+                Some(Err(e)) => self.restore = self.away.take().map(|r| Restore { toast: Some((e, true)), ..r }),
+                None => self.restore = self.away.take(),
+            },
         }
     }
 
-    /// Steps the launcher aside and opens the screen color picker.
     fn start_pick(&mut self) {
-        if self.picking.is_some() {
+        self.start_overlay(Overlay::ColorPicker);
+    }
+
+    fn start_snip(&mut self) {
+        self.start_overlay(Overlay::Snip);
+    }
+
+    /// Steps the launcher aside for a screen tool, remembering what it showed.
+    fn start_overlay(&mut self, which: Overlay) {
+        if self.away.is_some() {
             return;
         }
-        self.picking = Some(Restore {
+        self.away = Some(Restore {
             query: self.query.clone(),
             filter: self.filter.clone(),
             scope: self.scope.clone(),
             mode: self.mode,
             toast: None,
         });
-        self.pick_start = true;
+        self.overlay_start = Some(which);
         self.begin_hide();
     }
 
-    /// Runs the picker on its own thread once the launcher is hidden, then shows the
-    /// launcher again (Msg::Picked arrives before the show, so it can set the search).
-    fn spawn_picker(&self) {
+    /// Runs a screen tool on its own thread once the launcher is hidden. The launcher
+    /// comes back after a color pick or a cancel (the result message arrives before the
+    /// show, so it can set the search), but not after a finished snip.
+    fn spawn_overlay(&self, which: Overlay) {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             // Give DWM a moment to take the launcher off the screen before the capture.
             std::thread::sleep(Duration::from_millis(120));
-            let color = crate::colorpick::pick();
-            let _ = tx.send(Msg::Picked(color));
-            shell::post_show();
+            let come_back = match which {
+                Overlay::ColorPicker => {
+                    let _ = tx.send(Msg::Picked(crate::colorpick::pick()));
+                    true
+                }
+                Overlay::Snip => {
+                    let outcome = crate::snip::snip();
+                    let back = !matches!(outcome, Some(Ok(Snipped::Image)));
+                    let _ = tx.send(Msg::Snipped(outcome));
+                    back
+                }
+            };
+            if come_back {
+                shell::post_show();
+            }
         });
     }
 
@@ -757,6 +808,7 @@ impl SlothSearch {
                 self.toast = say("History cleared");
             }
             AppCmd::PickColor => self.start_pick(),
+            AppCmd::Snip => self.start_snip(),
         }
     }
 }
