@@ -49,6 +49,8 @@ pub enum Msg {
     Picked(Option<crate::colorpick::Rgb>),
     /// The snipper closed: None if cancelled, else what it made or what went wrong.
     Snipped(Option<Result<Snipped, String>>),
+    /// A Recycle Bin move finished: the paths, and Ok(false) if Windows' prompt was cancelled.
+    Recycled(Vec<String>, Result<bool, String>),
 }
 
 /// The screen tools that take over the whole screen while the launcher steps aside.
@@ -93,6 +95,10 @@ enum KeyCmd {
     /// Ctrl+Tab / Ctrl+Shift+Tab through the type filters.
     CycleFilter(i32),
     Nth(usize),
+    /// Shift+Up/Down: grow the multi-selection.
+    Extend(i64),
+    /// Ctrl+Space: add or remove the selected row.
+    ToggleMark,
     /// A shortcut like "Enter" or "Ctrl+Shift+C", matched against each action's `keys`.
     Combo(String),
 }
@@ -129,8 +135,8 @@ fn combo(key: Key, m: Modifiers) -> Option<String> {
     if m.alt {
         s.push_str("Alt+");
     }
-    // Letters only mean something with Ctrl.
-    if !m.ctrl && name.len() == 1 {
+    // Letters only mean something with Ctrl; a bare Delete belongs to the search box.
+    if !m.ctrl && name.len() == 1 || name == "Delete" && !m.ctrl && !m.shift && !m.alt {
         return None;
     }
     s.push_str(name);
@@ -219,6 +225,12 @@ pub struct SlothSearch {
     away: Option<Restore>,
     /// Applied on the next show (a screen tool's way back).
     restore: Option<Restore>,
+    /// The multi-selection (Ctrl+click, Shift+click, Shift+arrows): file and folder paths,
+    /// kept across searches so you can gather files from all over, then drag, copy or
+    /// recycle them together.
+    marked: Vec<String>,
+    /// A drag-out just ended inside Windows' own loop, which swallowed the button release.
+    release_pointer: bool,
 }
 
 impl SlothSearch {
@@ -326,6 +338,8 @@ impl SlothSearch {
             overlay_start: None,
             away: None,
             restore: None,
+            marked: Vec::new(),
+            release_pointer: false,
         };
         app.refresh_sources(&ctx, true);
         app
@@ -384,6 +398,9 @@ impl SlothSearch {
                 style(ctx, &self.pal);
                 self.engine.wins = wins;
                 let fresh = self.hidden_at.elapsed() > Duration::from_secs(90) || scope != self.scope || mode != self.mode;
+                if self.hidden_at.elapsed() > Duration::from_secs(90) {
+                    self.marked.clear();
+                }
                 if fresh || scope.is_some() {
                     self.query.clear();
                     self.filter = None;
@@ -483,6 +500,27 @@ impl SlothSearch {
                 Some(Err(e)) => self.restore = self.away.take().map(|r| Restore { toast: Some((e, true)), ..r }),
                 None => self.restore = self.away.take(),
             },
+            Msg::Recycled(paths, result) => {
+                self.toast = Some(match result {
+                    Ok(true) => {
+                        let gone: Vec<String> = paths.iter().map(|p| p.to_lowercase()).collect();
+                        self.marked.retain(|p| !gone.contains(&p.to_lowercase()));
+                        for r in self.files.iter_mut().flatten() {
+                            r.hits.retain(|h| !gone.contains(&h.path().to_lowercase()));
+                        }
+                        for p in &paths {
+                            let item = Item::new(Kind::File, "", "", crate::model::Icon::Glyph(' '), Target::Path { path: p.clone(), folder: false });
+                            self.engine.history.forget(&item);
+                        }
+                        // Ask Everything again; its index already has the change.
+                        self.built = None;
+                        self.rebuild();
+                        (format!("Moved {} to the Recycle Bin", count_or_name(&paths)), Instant::now(), false)
+                    }
+                    Ok(false) => ("Nothing was deleted".into(), Instant::now(), false),
+                    Err(e) => (e, Instant::now(), true),
+                });
+            }
         }
     }
 
@@ -579,8 +617,11 @@ impl SlothSearch {
             return;
         }
         let text_changed = self.built.as_ref().is_none_or(|b| b.0 != now.0);
+        let context_changed = self.built.as_ref().is_none_or(|b| {
+            b.1 != now.1 || b.2 != now.2 || b.3 != now.3 || filters::parse(&b.0).0 != filters::parse(&now.0).0
+        });
         self.built = Some(now);
-        if text_changed {
+        if text_changed || context_changed {
             self.user_moved = false;
             self.actions_open = false;
             self.armed = None;
@@ -592,7 +633,11 @@ impl SlothSearch {
             Mode::Windows => Vec::new(),
             Mode::All => self.engine.searches(&rest, self.scope.as_ref(), filter.as_ref()),
         };
-        // Until fresh results arrive, keep old file hits that still match.
+        // A different folder/type needs a fresh result set (including its total).
+        // Ordinary typing can retain matching names until the next reply arrives.
+        if context_changed {
+            self.files.clear();
+        }
         let terms: Vec<String> = rest.to_lowercase().split_whitespace().map(String::from).collect();
         for r in self.files.iter_mut().flatten() {
             r.hits.retain(|h| {
@@ -725,6 +770,27 @@ impl SlothSearch {
                 self.built = None;
                 return;
             }
+            Act::Recycle => {
+                let paths = self.chosen(&item);
+                self.recycle(paths);
+                return;
+            }
+            // With several rows picked, copying takes all of them.
+            Act::CopyFile | Act::CopyPath if !self.marked.is_empty() => {
+                let paths = self.chosen(&item);
+                let ok = if act == Act::CopyFile {
+                    launch::copy_files(&paths.iter().map(String::as_str).collect::<Vec<_>>())
+                } else {
+                    launch::copy_text(&paths.join("\r\n"))
+                };
+                let what = if act == Act::CopyFile { "items" } else { "paths" };
+                self.toast = Some(if ok {
+                    (format!("Copied {} {what} — paste them anywhere", paths.len()), Instant::now(), false)
+                } else {
+                    ("Clipboard is busy".into(), Instant::now(), true)
+                });
+                return;
+            }
             _ => {}
         }
 
@@ -768,6 +834,90 @@ impl SlothSearch {
                 self.built = None;
             }
         }
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The multi-selection
+
+    fn is_marked(&self, path: &str) -> bool {
+        self.marked.iter().any(|m| m.eq_ignore_ascii_case(path))
+    }
+
+    /// The path of the row at this flat index, if it's a file, folder or repo.
+    fn path_at(&self, flat_index: usize) -> Option<String> {
+        let &(s, i) = self.flat.get(flat_index)?;
+        row_path(&self.sections[s].items[i]).map(str::to_string)
+    }
+
+    fn mark(&mut self, flat_index: usize) {
+        if let Some(p) = self.path_at(flat_index) {
+            if !self.is_marked(&p) {
+                self.marked.push(p);
+            }
+        }
+    }
+
+    fn toggle_mark(&mut self, flat_index: usize) {
+        if let Some(p) = self.path_at(flat_index) {
+            if self.is_marked(&p) {
+                self.marked.retain(|m| !m.eq_ignore_ascii_case(&p));
+            } else {
+                self.marked.push(p);
+            }
+        }
+    }
+
+    /// What copying or recycling from this row acts on: the multi-selection while there
+    /// is one (the footer says so), else just the row.
+    fn chosen(&self, item: &Item) -> Vec<String> {
+        if !self.marked.is_empty() {
+            return self.marked.clone();
+        }
+        row_path(item).map(|p| vec![p.to_string()]).unwrap_or_default()
+    }
+
+    /// What dragging this row carries: the selection if the row is in it (as in
+    /// Explorer), else just the row.
+    fn dragged(&self, item: &Item) -> Vec<String> {
+        match row_path(item) {
+            Some(p) if self.is_marked(p) => self.marked.clone(),
+            Some(p) => vec![p.to_string()],
+            None => Vec::new(),
+        }
+    }
+
+    /// Drags these files out to another app. Windows runs the drag in its own loop.
+    fn drag_out(&mut self, paths: Vec<String>) {
+        self.release_pointer = true;
+        self.actions_open = false;
+        if launch::drag_files(self.hwnd, &paths) {
+            self.toast = Some((format!("Dropped {}", count_or_name(&paths)), Instant::now(), false));
+        }
+        egui_ctx().request_repaint();
+    }
+
+    /// First press arms, a second within four seconds moves them to the Recycle Bin.
+    fn recycle(&mut self, paths: Vec<String>) {
+        if paths.is_empty() {
+            self.toast = Some(("Only files and folders go to the Recycle Bin".into(), Instant::now(), true));
+            return;
+        }
+        if let Some(p) = paths.iter().find(|p| launch::too_important(p)) {
+            self.toast = Some((format!("Won't recycle {} from here", crate::util::file_name(p)), Instant::now(), true));
+            return;
+        }
+        let key = format!("recycle:{}", paths.join("|"));
+        if !self.armed.as_ref().is_some_and(|(a, t)| *a == key && t.elapsed() < Duration::from_secs(4)) {
+            self.armed = Some((key, Instant::now()));
+            return;
+        }
+        self.armed = None;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = launch::recycle(&paths);
+            let _ = tx.send(Msg::Recycled(paths, result));
+            egui_ctx().request_repaint();
+        });
     }
 
     fn app_command(&mut self, cmd: AppCmd) {
@@ -826,6 +976,22 @@ fn egui_ctx() -> &'static egui::Context {
 fn brand_texture(ctx: &egui::Context, name: &str, rgba: &[u8], side: usize) -> TextureHandle {
     let img = egui::ColorImage::from_rgba_unmultiplied([side, side], rgba);
     ctx.load_texture(name, img, egui::TextureOptions::LINEAR)
+}
+
+/// The path a row can be dragged, copied, recycled or multi-selected as.
+fn row_path(item: &Item) -> Option<&str> {
+    match &item.target {
+        Target::Path { path, .. } | Target::Project { path } => Some(path),
+        _ => None,
+    }
+}
+
+/// "notes.md" for one path, "3 items" for several.
+fn count_or_name(paths: &[String]) -> String {
+    match paths {
+        [one] => crate::util::file_name(one).to_string(),
+        _ => format!("{} items", paths.len()),
+    }
 }
 
 /// Identity of a row across rebuilds, to keep the selection on it.

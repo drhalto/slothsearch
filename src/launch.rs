@@ -1,6 +1,7 @@
 //! Doing things: the actions a row offers, and running them.
 
 use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
 use std::process::Command;
 
 use windows::Win32::Foundation::{HANDLE, LPARAM, WPARAM};
@@ -38,11 +39,12 @@ pub enum Act {
     GitHub,
     CloseWindow,
     Forget,
-    /// These four are handled by the app (favorites live there).
+    /// These are handled by the app (favorites and the multi-selection live there).
     Favorite,
     MoveUp,
     MoveDown,
     Rename,
+    Recycle,
 }
 
 pub struct Action {
@@ -89,6 +91,7 @@ pub fn actions(item: &Item, scope: Option<&Scope>) -> Vec<Action> {
             v.push(a(Act::CopyPath, "Copy path", "Ctrl+Shift+C", glyph::COPY));
             v.push(a(Act::CopyFile, if *folder { "Copy folder" } else { "Copy file" }, "Ctrl+Shift+F", glyph::COPY));
             v.push(a(Act::Properties, "Properties", "Alt+Enter", glyph::INFO));
+            v.push(a(Act::Recycle, "Move to Recycle Bin", "Ctrl+Delete", glyph::DELETE));
         }
         Target::Project { path } => {
             v.push(a(Act::Editor, "Open in VS Code", "Enter", glyph::CODE));
@@ -152,7 +155,7 @@ pub fn run(act: Act, item: &Item, env: &Env) -> Outcome {
     let t = &item.target;
     match act {
         Act::Forget => Outcome::Forget,
-        Act::Favorite | Act::MoveUp | Act::MoveDown | Act::Rename => Outcome::Error("Not available here".into()),
+        Act::Favorite | Act::MoveUp | Act::MoveDown | Act::Rename | Act::Recycle => Outcome::Error("Not available here".into()),
         Act::Open => open(item, env),
         Act::Reveal => match t {
             Target::Project { path } => done(shell(None, path, None)),
@@ -363,13 +366,38 @@ fn hidden(exe: &str, args: &[&str]) -> bool {
 }
 
 fn editor(path: &str) -> bool {
-    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
-    let code = format!("{local}\\Programs\\Microsoft VS Code\\Code.exe");
-    if std::path::Path::new(&code).exists() {
-        Command::new(code).arg(path).spawn().is_ok()
-    } else {
-        Command::new("cmd.exe").args(["/c", "code"]).arg(path).creation_flags(CREATE_NO_WINDOW).spawn().is_ok()
+    let installs = [
+        std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("Programs").join("Microsoft VS Code")),
+        std::env::var_os("ProgramFiles").map(|p| PathBuf::from(p).join("Microsoft VS Code")),
+        std::env::var_os("ProgramFiles(x86)").map(|p| PathBuf::from(p).join("Microsoft VS Code")),
+    ];
+    let search_path = std::env::var_os("PATH");
+    code_executable(installs.into_iter().flatten(), search_path.as_deref())
+        .is_some_and(|code| Command::new(code).arg(path).spawn().is_ok())
+}
+
+/// Resolve user/system installs and PATH/portable installs to the native executable.
+/// Never pass the selected path through code.cmd or CMD's command parser.
+fn code_executable(installs: impl IntoIterator<Item = PathBuf>, search_path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    for dir in installs {
+        let exe = dir.join("Code.exe");
+        if exe.is_file() {
+            return Some(exe);
+        }
     }
+    for dir in search_path.into_iter().flat_map(std::env::split_paths) {
+        let exe = dir.join("Code.exe");
+        if exe.is_file() {
+            return Some(exe);
+        }
+        // VS Code's standard CLI shim lives in <install>\bin\code.cmd.
+        if dir.join("code.cmd").is_file()
+            && let Some(exe) = dir.parent().map(|p| p.join("Code.exe")).filter(|p| p.is_file())
+        {
+            return Some(exe);
+        }
+    }
+    None
 }
 
 /// Windows Terminal in `dir`, optionally running a command in PowerShell.
@@ -447,6 +475,88 @@ pub fn copy_files(paths: &[&str]) -> bool {
         set_clipboard_bytes(effect_format, &1u32.to_le_bytes()); // DROPEFFECT_COPY
         ok
     })
+}
+
+/// Drags files out of the launcher the way Explorer does: a shell data object, so any app
+/// that takes dropped files (a chat box, a browser upload, an Explorer window) gets them,
+/// with the shell's own drag image. Copy or link only, never move. Blocks until the drop;
+/// true if another window took them.
+pub fn drag_files(hwnd: isize, paths: &[String]) -> bool {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::System::Com::{IBindCtx, IDataObject};
+    use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_NONE, IDropSource, OleInitialize};
+    use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+    use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, GetCursorPos, WindowFromPoint};
+    unsafe {
+        // winit has normally done this already; a second call is harmless.
+        let _ = OleInitialize(None);
+        let pidls: Vec<*mut ITEMIDLIST> = paths
+            .iter()
+            .map(|p| {
+                let w = wide(p);
+                ILCreateFromPathW(PCWSTR(w.as_ptr()))
+            })
+            .filter(|p| !p.is_null())
+            .collect();
+        if pidls.is_empty() {
+            return false;
+        }
+        let list: Vec<*const ITEMIDLIST> = pidls.iter().map(|p| *p as *const ITEMIDLIST).collect();
+        let effect = SHCreateShellItemArrayFromIDLists(&list)
+            .and_then(|items| items.BindToHandler::<_, IDataObject>(None::<&IBindCtx>, &BHID_DataObject))
+            .and_then(|data| SHDoDragDrop(Some(wins::hwnd(hwnd)), &data, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_LINK));
+        for p in pidls {
+            ILFree(Some(p));
+        }
+        // Let go over the launcher itself: that's a cancel, not a drop.
+        let mut pt = POINT::default();
+        let on_self = GetCursorPos(&mut pt).is_ok() && GetAncestor(WindowFromPoint(pt), GA_ROOT) == wins::hwnd(hwnd);
+        effect.is_ok_and(|e| e != DROPEFFECT_NONE) && !on_self
+    }
+}
+
+/// Folders too big or too central to recycle from a search box: drive roots, top-level
+/// folders (C:\Windows, C:\Users), your home folder and its standard folders.
+pub fn too_important(path: &str) -> bool {
+    let p = path.trim_end_matches('\\');
+    if p.split('\\').filter(|s| !s.is_empty()).count() <= 2 {
+        return true;
+    }
+    let home = home();
+    let lower = p.to_lowercase();
+    lower == home.to_lowercase()
+        || ["Desktop", "Documents", "Downloads", "Pictures", "Videos", "Music", "AppData", "OneDrive"]
+            .iter()
+            .any(|d| lower == format!("{home}\\{d}").to_lowercase())
+}
+
+/// Moves files and folders to the Recycle Bin. Windows still asks before anything would be
+/// deleted for good (too big for the bin, or on a network drive). Ok(false) if that was
+/// cancelled.
+pub fn recycle(paths: &[String]) -> Result<bool, String> {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+    let mut from: Vec<u16> = Vec::new();
+    for p in paths {
+        from.extend(p.encode_utf16());
+        from.push(0);
+    }
+    from.push(0);
+    let flags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING | FOF_NOERRORUI;
+    let mut op = SHFILEOPSTRUCTW { wFunc: FO_DELETE, pFrom: PCWSTR(from.as_ptr()), fFlags: flags.0 as u16, ..Default::default() };
+    let r = unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        SHFileOperationW(&mut op)
+    };
+    if op.fAnyOperationsAborted.as_bool() {
+        return Ok(false);
+    }
+    match r {
+        0 => Ok(true),
+        0x20 => Err("It's open in another program".into()),
+        0x5 | 0x78 => Err("Windows says access is denied".into()),
+        0x2 | 0x3 | 0x7C => Err("It's already gone".into()),
+        _ => Err(format!("Windows couldn't recycle that (error {r:#x})")),
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -532,3 +642,63 @@ pub fn restart_everything() -> bool {
     Command::new("C:\\Program Files\\Everything\\Everything.exe").arg("-startup").spawn().is_ok()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editor_discovery_resolves_native_installs_without_running_cmd_shims() {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = base.join(format!("editor-test-{}-{unique}", std::process::id()));
+        let system = root.join("system");
+        let portable = root.join("portable&ver&rem");
+        let bin = portable.join("bin");
+        std::fs::create_dir_all(&system).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(system.join("Code.exe"), []).unwrap();
+        std::fs::write(portable.join("Code.exe"), []).unwrap();
+        std::fs::write(bin.join("code.cmd"), "@echo must never run").unwrap();
+        let path = std::env::join_paths([&bin]).unwrap();
+
+        let installed = code_executable([system.clone()], Some(&path));
+        let portable_exe = code_executable([], Some(&path));
+        std::fs::remove_file(portable.join("Code.exe")).unwrap();
+        let shim_only = code_executable([], Some(&path));
+        let missing = code_executable([root.join("missing")], None);
+
+        assert!(root.starts_with(&base) && root != base);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(installed, Some(system.join("Code.exe")));
+        assert_eq!(portable_exe, Some(portable.join("Code.exe")));
+        assert_eq!(shim_only, None);
+        assert_eq!(missing, None);
+    }
+
+    #[test]
+    fn recycling_refuses_roots_top_level_and_home_folders() {
+        let home = home();
+        for p in ["C:\\", "C:", "D:\\Projects\\", "C:\\Windows", "C:\\Users"] {
+            assert!(too_important(p), "{p}");
+        }
+        assert!(too_important(&home));
+        assert!(too_important(&format!("{home}\\downloads\\")));
+        assert!(!too_important(&format!("{home}\\Downloads\\old.zip")));
+        assert!(!too_important("D:\\Projects\\scratch"));
+    }
+
+    /// Puts a real file in the Recycle Bin, so it only runs when asked:
+    /// `cargo test recycle_ -- --ignored`.
+    #[test]
+    #[ignore]
+    fn recycle_moves_files_to_the_bin() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join(format!("recycle-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("slothsearch recycle test.txt");
+        std::fs::write(&file, "recycle me").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        assert_eq!(recycle(&[path]), Ok(true));
+        assert!(!file.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

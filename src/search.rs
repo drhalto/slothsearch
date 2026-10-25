@@ -262,7 +262,7 @@ impl Engine {
             };
             let frag = body.trim_matches('"').to_lowercase();
             if let Some(sl) = &scope_l {
-                if sl.contains(&frag) || frag.starts_with(sl.as_str()) {
+                if wild_contains(sl, &frag) || frag.starts_with(sl.as_str()) {
                     continue;
                 }
             }
@@ -647,7 +647,18 @@ impl Engine {
         let q = q.trim();
         let (local_excl, _) = self.exclusions(q, scope);
         let mut hits = merge_hits(files);
-        hits.retain(|h| !Self::excluded(&local_excl, h));
+        hits.retain(|h| {
+            !Self::excluded(&local_excl, h)
+                && scope.is_none_or(|s| {
+                    crate::util::strip_path_prefix(&h.path(), &s.path).is_some_and(|rest| !rest.is_empty())
+                })
+                && filter.is_none_or(|f| match &f.kind {
+                    FilterKind::Ext(exts) => !h.folder && exts.split(';').any(|e| e.eq_ignore_ascii_case(&extension(&h.name))),
+                    FilterKind::AnyFile => !h.folder,
+                    FilterKind::Folder => h.folder,
+                    _ => false,
+                })
+        });
 
         if let Some(f) = filter {
             return self.filtered_sections(q, scope, f, &hits, files);
@@ -791,7 +802,8 @@ fn wild_contains(hay: &str, pat: &str) -> bool {
                 if from(&hay[pos + first.len()..], rest, true) {
                     return true;
                 }
-                at = pos + 1;
+                let Some(ch) = hay[pos..].chars().next() else { break };
+                at = pos + ch.len_utf8();
             }
             false
         } else {
@@ -898,6 +910,49 @@ mod tests {
         assert!(wild_contains(r"c:\p\target\wasm32-unknown-unknown\debug\build\x", r"\target\*\debug\"));
         assert!(wild_contains(r"c:\a\node_modules\b", r"\node_modules\"));
         assert!(!wild_contains(r"c:\a\node_modules", r"\node_modules\"));
+        assert!(!wild_contains(r"c:\a\éé\x", r"\*é*\missing\"));
+    }
+
+    #[test]
+    fn scoped_search_waives_matching_wildcard_exclusions() {
+        let mut e = engine();
+        e.cfg.exclude = vec![r#"!"C:\Users\Reviewer\Desktop\*-main\""#.into()];
+        let scope = Scope { path: r"C:\Users\Reviewer\Desktop\example-main".into(), frame: 1, tab: 2 };
+        let results = vec![Ok(Results { total: 1, hits: vec![Hit {
+            name: "invoice.pdf".into(), dir: scope.path.clone(), folder: false, size: None, modified: None,
+        }] })];
+        let scoped = e.sections("invoice", Some(&scope), None, &results);
+        assert!(scoped.iter().flat_map(|s| &s.items).any(|i| i.kind == Kind::File));
+        let global = e.sections("invoice", None, None, &results);
+        assert!(!global.iter().flat_map(|s| &s.items).any(|i| i.kind == Kind::File));
+    }
+
+    #[test]
+    fn stale_file_hits_must_match_current_filter_and_scope() {
+        let mut e = engine();
+        let hit = |name: &str, dir: &str, folder: bool| Hit {
+            name: name.into(), dir: dir.into(), folder, size: None, modified: None,
+        };
+        let results = vec![Ok(Results { total: 4, hits: vec![
+            hit("invoice.PDF", r"C:\Docs", false),
+            hit("invoice.txt", r"C:\Docs", false),
+            hit("invoice-folder.pdf", r"C:\Docs", true),
+            hit("invoice.pdf", r"C:\Docs2", false),
+        ] })];
+        let scope = Scope { path: r"c:\docs\".into(), frame: 1, tab: 2 };
+        let pdf = filters::lookup("pdf").unwrap();
+        let sections = e.sections("invoice", Some(&scope), Some(&pdf), &results);
+        let paths: Vec<_> = sections.iter().flat_map(|s| &s.items).filter_map(|i| i.target.path()).collect();
+        assert_eq!(paths, vec![r"C:\Docs\invoice.PDF"]);
+
+        let folders = filters::lookup("folder").unwrap();
+        let sections = e.sections("invoice", Some(&scope), Some(&folders), &results);
+        let paths: Vec<_> = sections.iter().flat_map(|s| &s.items).filter_map(|i| i.target.path()).collect();
+        assert_eq!(paths, vec![r"C:\Docs\invoice-folder.pdf"]);
+
+        let files = filters::lookup("file").unwrap();
+        let sections = e.sections("invoice", Some(&scope), Some(&files), &results);
+        assert_eq!(sections.iter().flat_map(|s| &s.items).filter(|i| i.kind == Kind::File).count(), 2);
     }
 
     #[test]

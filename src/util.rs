@@ -19,12 +19,24 @@ pub fn home() -> String {
 
 /// `C:\Users\Dustin\roost\cad` -> `~\roost\cad`, for subtitles.
 pub fn tilde(path: &str) -> String {
-    let h = home();
-    if path.len() >= h.len() && path[..h.len()].eq_ignore_ascii_case(&h) {
-        format!("~{}", &path[h.len()..])
-    } else {
-        path.to_string()
+    strip_path_prefix(path, &home()).map_or_else(|| path.to_string(), |rest| format!("~{rest}"))
+}
+
+/// Removes a case-insensitive Windows path prefix at a component boundary. The
+/// suffix retains its leading separator; checked slicing also accepts Unicode paths.
+pub fn strip_path_prefix<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
+    let prefix = prefix.trim_end_matches(['\\', '/']);
+    if prefix.is_empty() || !path.get(..prefix.len())?.eq_ignore_ascii_case(prefix) {
+        return None;
     }
+    let rest = &path[prefix.len()..];
+    (rest.is_empty() || rest.starts_with(['\\', '/'])).then_some(rest)
+}
+
+/// Round message-wait timeouts up so a fractional millisecond doesn't become a
+/// busy loop. Reserve Win32's INFINITE value rather than accidentally using it.
+pub fn wait_millis(wait: std::time::Duration) -> u32 {
+    wait.as_nanos().div_ceil(1_000_000).min(u32::MAX as u128 - 1) as u32
 }
 
 /// Last path component, without a trailing separator.
@@ -149,5 +161,27 @@ mod tests {
         assert_eq!(human_size(512), "512 bytes");
         assert_eq!(human_size(1536), "1.5 KB");
         assert_eq!(civil_date(1_700_000_000), "Nov 14, 2023");
+    }
+
+    #[test]
+    fn path_prefixes_are_unicode_safe_and_component_bounded() {
+        let profile = r"C:\Users\Dustin";
+        assert_eq!(strip_path_prefix(r"C:\Documents\aé\invoice.txt", profile), None);
+        assert_eq!(strip_path_prefix(r"C:\Users\Dustin2\x", profile), None);
+        assert_eq!(strip_path_prefix(r"C:\Users", profile), None);
+        assert_eq!(strip_path_prefix(r"c:\users\DUSTIN\café", profile), Some(r"\café"));
+        assert_eq!(strip_path_prefix(profile, profile), Some(""));
+        assert_eq!(strip_path_prefix(r"C:\Users\Zoë\x", r"C:\Users\Zoë\"), Some(r"\x"));
+        assert_eq!(strip_path_prefix(r"C:\x", r"C:\"), Some(r"\x"));
+    }
+
+    #[test]
+    fn wait_timeouts_round_up_and_stay_finite() {
+        use std::time::Duration;
+        assert_eq!(wait_millis(Duration::ZERO), 0);
+        assert_eq!(wait_millis(Duration::from_nanos(1)), 1);
+        assert_eq!(wait_millis(Duration::from_micros(1500)), 2);
+        assert_eq!(wait_millis(Duration::from_millis(50)), 50);
+        assert_eq!(wait_millis(Duration::MAX), u32::MAX - 1);
     }
 }

@@ -16,11 +16,10 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::INFINITE;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
-use crate::util::{from_wide, wide};
+use crate::util::{from_wide, wait_millis, wide};
 
 const COPYDATA_QUERY2W: usize = 18;
 
@@ -136,7 +135,11 @@ impl Client {
     pub fn query(&mut self, search: &str, max: u32, sort: u32, timeout: Duration) -> Result<Results, Error> {
         let everything = unsafe { FindWindowW(w!("EVERYTHING_TASKBAR_NOTIFICATION"), PCWSTR::null()) }
             .map_err(|_| Error::NotRunning)?;
+        self.query_window(everything, search, max, sort, timeout)
+    }
 
+    fn query_window(&mut self, everything: HWND, search: &str, max: u32, sort: u32, timeout: Duration) -> Result<Results, Error> {
+        let deadline = Instant::now() + timeout;
         self.next_id += 1;
         let id = self.next_id;
         WAITING_FOR.set(id);
@@ -161,19 +164,28 @@ impl Client {
             cbData: buf.len() as u32,
             lpData: buf.as_mut_ptr().cast(),
         };
-        let accepted = unsafe {
-            SendMessageW(
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            WAITING_FOR.set(0);
+            return Err(Error::NoReply);
+        }
+        let mut accepted = 0;
+        let sent = unsafe {
+            SendMessageTimeoutW(
                 everything,
                 WM_COPYDATA,
-                Some(WPARAM(self.hwnd.0 as usize)),
-                Some(LPARAM(&cds as *const _ as isize)),
+                WPARAM(self.hwnd.0 as usize),
+                LPARAM(&cds as *const _ as isize),
+                SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT,
+                wait_millis(left),
+                Some(&mut accepted),
             )
         };
-        if accepted.0 == 0 {
+        if sent.0 == 0 || accepted == 0 {
+            WAITING_FOR.set(0);
             return Err(Error::NoReply);
         }
 
-        let deadline = Instant::now() + timeout;
         loop {
             if let Some(bytes) = REPLY.with(|r| r.borrow_mut().take()) {
                 WAITING_FOR.set(0);
@@ -185,7 +197,7 @@ impl Client {
                 return Err(Error::NoReply);
             }
             unsafe {
-                MsgWaitForMultipleObjects(None, false, left.as_millis().min(INFINITE as u128 - 1) as u32, QS_ALLINPUT);
+                MsgWaitForMultipleObjects(None, false, wait_millis(left), QS_ALLINPUT);
                 let mut msg = MSG::default();
                 while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                     let _ = TranslateMessage(&msg);
@@ -389,5 +401,78 @@ fn run_upkeep(client: &mut Client, job: Job) -> Reply {
             });
             Reply::Health(age)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipc_send_is_bounded_and_synchronous_replies_still_work() {
+        unsafe extern "system" fn mock(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+            if msg == WM_COPYDATA {
+                let cds = unsafe { &*(lp.0 as *const COPYDATASTRUCT) };
+                let bytes = unsafe { std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize) };
+                if u32_at(bytes, 16) == Some(1) {
+                    // Simulates Everything getting stuck handling the request.
+                    std::thread::sleep(Duration::from_millis(350));
+                } else {
+                    let reply = [0u8; 20];
+                    let cds = COPYDATASTRUCT {
+                        dwData: u32_at(bytes, 4).unwrap() as usize,
+                        cbData: reply.len() as u32,
+                        lpData: reply.as_ptr() as *mut _,
+                    };
+                    unsafe {
+                        SendMessageW(
+                            HWND(u32_at(bytes, 0).unwrap() as usize as *mut _),
+                            WM_COPYDATA,
+                            Some(WPARAM(hwnd.0 as usize)),
+                            Some(LPARAM(&cds as *const _ as isize)),
+                        );
+                    }
+                }
+                return LRESULT(1);
+            }
+            if msg == WM_DESTROY {
+                unsafe { PostQuitMessage(0) };
+                return LRESULT(0);
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+        }
+
+        let (tx, rx) = channel();
+        let server = std::thread::spawn(move || unsafe {
+            let instance = GetModuleHandleW(None).unwrap();
+            let class = w!("SlothSearchEverythingTimeoutTest");
+            let wc = WNDCLASSEXW {
+                cbSize: size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(mock),
+                hInstance: instance.into(), lpszClassName: class, ..Default::default()
+            };
+            RegisterClassExW(&wc);
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(), class, w!(""), WINDOW_STYLE::default(),
+                0, 0, 0, 0, None, None, Some(instance.into()), None,
+            ).unwrap();
+            tx.send(hwnd.0 as isize).unwrap();
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                DispatchMessageW(&msg);
+            }
+        });
+        let hwnd = HWND(rx.recv().unwrap() as *mut _);
+        let mut client = Client::new().unwrap();
+        let quick = client.query_window(hwnd, "invoice", 2, SORT_NAME, Duration::from_secs(1));
+        let start = Instant::now();
+        let slow = client.query_window(hwnd, "invoice", 1, SORT_NAME, Duration::from_millis(50));
+        let elapsed = start.elapsed();
+        unsafe { let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)); }
+        server.join().unwrap();
+
+        assert_eq!(quick.unwrap().total, 0);
+        assert_eq!(slow.unwrap_err(), Error::NoReply);
+        assert!(elapsed < Duration::from_millis(250), "send exceeded its timeout: {elapsed:?}");
+        assert_eq!(WAITING_FOR.get(), 0);
     }
 }

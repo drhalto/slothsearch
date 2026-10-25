@@ -20,6 +20,29 @@ use crate::overlay::{self, Dib, colorref};
 const FPS: u32 = 30;
 /// One frame in Media Foundation's 100 ns units.
 const FRAME: i64 = 10_000_000 / FPS as i64;
+
+/// Message wakeups can arrive between frame deadlines. Only advance the encoder
+/// when a new frame is due, skipping missed deadlines without replaying old ones.
+#[derive(Default)]
+struct FrameClock {
+    next: i64,
+}
+
+impl FrameClock {
+    fn sample_time(&mut self, elapsed: Duration) -> Option<i64> {
+        let index = (elapsed.as_nanos() / (FRAME as u128 * 100)) as i64;
+        if index < self.next {
+            return None;
+        }
+        self.next = index + 1;
+        Some(index * FRAME)
+    }
+
+    fn wait(&self, elapsed: Duration) -> Duration {
+        Duration::from_nanos((self.next * FRAME * 100) as u64).saturating_sub(elapsed)
+    }
+}
+
 const RED: [u8; 3] = [232, 72, 72];
 const STOP: char = '\u{E71A}';
 
@@ -69,6 +92,7 @@ fn run(area: RECT, w: i32, h: i32, path: &std::path::Path) -> Result<(), String>
 
     let screen = unsafe { GetDC(None) };
     let t0 = Instant::now();
+    let mut clock = FrameClock::default();
     let mut shown_secs = 0;
     let mut outcome = Ok(());
     loop {
@@ -91,21 +115,19 @@ fn run(area: RECT, w: i32, h: i32, path: &std::path::Path) -> Result<(), String>
                 }
             }
         }
-        // The frame for this moment, on a 30 fps grid; frames we fall behind on are
-        // skipped and the previous one simply shows longer.
-        let index = (elapsed.as_nanos() / (FRAME as u128 * 100)) as i64;
-        unsafe {
-            let _ = BitBlt(frame.dc, 0, 0, w, h, Some(screen), area.left, area.top, SRCCOPY | CAPTUREBLT);
-            draw_cursor(frame.dc, area);
-            if let Err(e) = write_frame(&writer, stream, frame.pixels(), index * FRAME) {
-                outcome = Err(err(e));
-                break;
+        if let Some(time) = clock.sample_time(elapsed) {
+            unsafe {
+                let _ = BitBlt(frame.dc, 0, 0, w, h, Some(screen), area.left, area.top, SRCCOPY | CAPTUREBLT);
+                draw_cursor(frame.dc, area);
+                if let Err(e) = write_frame(&writer, stream, frame.pixels(), time) {
+                    outcome = Err(err(e));
+                    break;
+                }
             }
         }
-        let next = t0 + Duration::from_nanos(((index + 1) * FRAME * 100) as u64);
-        let wait = next.saturating_duration_since(Instant::now());
+        let wait = clock.wait(t0.elapsed());
         unsafe {
-            MsgWaitForMultipleObjects(None, false, wait.as_millis() as u32, QS_ALLINPUT);
+            MsgWaitForMultipleObjects(None, false, crate::util::wait_millis(wait), QS_ALLINPUT);
         }
     }
     unsafe {
@@ -440,5 +462,27 @@ fn draw_bar(hwnd: HWND, dc: HDC, b: &Bar) {
         SelectObject(dc, of);
         let _ = DeleteObject(font.into());
         let _ = DeleteObject(icons.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn early_wakeups_do_not_duplicate_recorded_frames() {
+        let mut clock = FrameClock::default();
+        let times: Vec<_> = (0..230).step_by(2).filter_map(|ms| clock.sample_time(Duration::from_millis(ms))).collect();
+        assert_eq!(times, (0..7).map(|i| i * FRAME).collect::<Vec<_>>());
+        assert!(clock.wait(Duration::from_millis(230)) > Duration::ZERO);
+    }
+
+    #[test]
+    fn missed_recording_deadlines_are_skipped() {
+        let mut clock = FrameClock::default();
+        assert_eq!(clock.sample_time(Duration::ZERO), Some(0));
+        assert_eq!(clock.sample_time(Duration::from_millis(200)), Some(6 * FRAME));
+        assert_eq!(clock.sample_time(Duration::from_millis(201)), None);
+        assert_eq!(clock.sample_time(Duration::from_millis(234)), Some(7 * FRAME));
     }
 }

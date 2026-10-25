@@ -41,6 +41,15 @@ impl eframe::App for SlothSearch {
         if !self.visible {
             return;
         }
+        // Windows' drag loop ate the mouse-up; tell egui the button is free again.
+        if std::mem::take(&mut self.release_pointer) {
+            raw.events.insert(0, Event::PointerButton {
+                pos: self.last_pointer.unwrap_or_default(),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            });
+        }
         let empty = self.query.is_empty();
         let droppable = self.scope.is_some() || self.mode == Mode::Windows || self.filter.is_some();
         let mut taken = Vec::new();
@@ -50,6 +59,9 @@ impl eframe::App for SlothSearch {
             let cmd = match key {
                 Key::ArrowDown if plain => KeyCmd::Down,
                 Key::ArrowUp if plain => KeyCmd::Up,
+                Key::ArrowDown if m.shift && !m.ctrl && !m.alt => KeyCmd::Extend(1),
+                Key::ArrowUp if m.shift && !m.ctrl && !m.alt => KeyCmd::Extend(-1),
+                Key::Space if m.ctrl && !m.shift && !m.alt => KeyCmd::ToggleMark,
                 Key::Tab if m.ctrl => KeyCmd::CycleFilter(if m.shift { -1 } else { 1 }),
                 Key::Tab if !m.ctrl && !m.alt => if m.shift { KeyCmd::Up } else { KeyCmd::Down },
                 Key::N if m.ctrl && !m.shift => KeyCmd::Down,
@@ -90,11 +102,15 @@ impl eframe::App for SlothSearch {
         // eframe shows the window after its first frame; it starts off-screen, then hides.
         if self.boot_frames < 3 {
             self.boot_frames += 1;
-            if self.boot_frames == 3 && !self.visible {
+            if self.boot_frames == 3 {
+                // Strip winit's frame even if a hotkey/second launch opened us
+                // during startup; otherwise the native frame shadow survives.
                 make_popup(self.hwnd);
-                shell::hide(self.hwnd);
-                if self.demo.is_some() {
-                    shell::post_show();
+                if !self.visible {
+                    shell::hide(self.hwnd);
+                    if self.demo.is_some() {
+                        shell::post_show();
+                    }
                 }
             }
             ctx.request_repaint();
@@ -286,12 +302,24 @@ impl SlothSearch {
                 KeyCmd::PageDown if n > 0 => self.select((self.selected + 8).min(n - 1)),
                 KeyCmd::PageUp => self.select(self.selected.saturating_sub(8)),
                 KeyCmd::Escape => {
-                    if self.query.is_empty() {
-                        self.begin_hide();
-                    } else {
+                    if !self.query.is_empty() {
                         self.query.clear();
                         self.focus_input = true;
+                    } else if !self.marked.is_empty() {
+                        self.marked.clear();
+                        self.armed = None;
+                    } else {
+                        self.begin_hide();
                     }
+                }
+                KeyCmd::Extend(d) if n > 0 => {
+                    self.mark(self.selected);
+                    self.select((self.selected as i64 + d).clamp(0, n as i64 - 1) as usize);
+                    self.mark(self.selected);
+                }
+                KeyCmd::ToggleMark => {
+                    self.toggle_mark(self.selected);
+                    self.armed = None;
                 }
                 KeyCmd::ToggleActions => {
                     if self.selected_item().is_some() {
@@ -307,6 +335,7 @@ impl SlothSearch {
                         self.scope = None;
                         self.mode = Mode::All;
                     }
+                    self.sync_query();
                 }
                 KeyCmd::CycleFilter(d) => self.cycle_filter(d),
                 KeyCmd::Nth(i) => {
@@ -336,6 +365,17 @@ impl SlothSearch {
         if !self.engine.history.has(item) {
             v.retain(|a| a.act != Act::Forget);
         }
+        let n = self.marked.len();
+        if n > 0 {
+            for a in v.iter_mut() {
+                match a.act {
+                    Act::CopyFile => a.label = format!("Copy the {n} selected"),
+                    Act::CopyPath => a.label = format!("Copy the {n} selected paths"),
+                    Act::Recycle => a.label = format!("Move the {n} selected to Recycle Bin"),
+                    _ => {}
+                }
+            }
+        }
         if item.key().is_some() {
             let fav = self.engine.favorites.contains(item);
             let (label, g) = if fav { ("Remove from Favorites", glyph::STAR_FILLED) } else { ("Add to Favorites", glyph::STAR) };
@@ -361,6 +401,7 @@ impl SlothSearch {
             self.query = filters::parse(&self.query).1;
             self.cursor_end = true;
         }
+        self.sync_query();
     }
 
     /// From the filter menu: 0 is "All types", then `filters::all()` in order.
@@ -372,6 +413,7 @@ impl SlothSearch {
         }
         self.filter_menu = false;
         self.focus_input = true;
+        self.sync_query();
     }
 
     /// Runs the selected row's action bound to this shortcut, if it has one.
@@ -525,7 +567,10 @@ impl SlothSearch {
         let mut clicked = None;
         let mut context = None;
         let mut hovered = None;
+        let mut dragged = None;
         let scroll = std::mem::take(&mut self.scroll_to_selected);
+        // A press that has travelled a few pixels is a drag out, not a click.
+        let travelled = ui.input(|i| i.pointer.press_origin().zip(i.pointer.hover_pos()).is_some_and(|(a, b)| a.distance(b) > 6.0));
 
         // Nothing but "Search the web" means nothing on this PC matched.
         let searching = !self.query.trim().is_empty() || self.filter.is_some();
@@ -582,6 +627,9 @@ impl SlothSearch {
                         if resp.secondary_clicked() {
                             context = Some(flat);
                         }
+                        if resp.dragged() && travelled && row_path(item).is_some() {
+                            dragged = Some(item.clone());
+                        }
                         flat += 1;
                     }
                 }
@@ -596,25 +644,48 @@ impl SlothSearch {
                 self.armed = None;
             }
         }
-        if let Some(i) = context {
+        let mods = ui.input(|i| i.modifiers);
+        if let Some(item) = dragged {
+            let paths = self.dragged(&item);
+            self.drag_out(paths);
+        } else if let Some(i) = context {
             self.selected = i;
             self.user_moved = true;
             self.actions_open = true;
             self.action_sel = 0;
         } else if let Some(i) = clicked {
-            self.selected = i;
             self.actions_open = false;
-            self.run(Act::Open, i);
+            self.armed = None;
+            if mods.ctrl {
+                self.toggle_mark(i);
+            } else if mods.shift {
+                for j in self.selected.min(i)..=self.selected.max(i) {
+                    self.mark(j);
+                }
+            } else {
+                self.selected = i;
+                self.run(Act::Open, i);
+                return;
+            }
+            self.selected = i;
+            self.user_moved = true;
         }
     }
 
     fn row(&mut self, ui: &mut Ui, item: &Item, selected: bool, index: usize, width: f32) -> egui::Response {
         let pal = self.pal;
-        let (rect, resp) = ui.allocate_exact_size(vec2(width, ROW_H), Sense::click());
-        resp.widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, format!("{}, {}", item.title, item.kind.label())));
+        let sense = if row_path(item).is_some() { Sense::click_and_drag() } else { Sense::click() };
+        let (rect, resp) = ui.allocate_exact_size(vec2(width, ROW_H), sense);
+        let marked = row_path(item).is_some_and(|p| self.is_marked(p));
+        resp.widget_info(|| {
+            let picked = if marked { ", in selection" } else { "" };
+            WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, format!("{}, {}{picked}", item.title, item.kind.label()))
+        });
         let p = ui.painter();
         let bg = rect.shrink2(vec2(8.0, 2.0));
-        if selected {
+        if marked {
+            p.rect_filled(bg, 8.0, pal.accent.gamma_multiply(if selected { 0.32 } else { 0.18 }));
+        } else if selected {
             p.rect_filled(bg, 8.0, pal.selected);
         } else if resp.hovered() {
             p.rect_filled(bg, 8.0, pal.hover);
@@ -622,9 +693,17 @@ impl SlothSearch {
 
         let icon_rect = Rect::from_center_size(pos2(rect.left() + 34.0, rect.center().y), vec2(28.0, 28.0));
         self.paint_icon(ui, &item.icon, icon_rect, item.kind);
+        if marked {
+            let c = icon_rect.right_bottom() - vec2(1.0, 1.0);
+            let p = ui.painter();
+            p.circle(c, 7.5, pal.accent, Stroke::new(1.5, pal.panel));
+            p.text(c, Align2::CENTER_CENTER, glyph::CHECK.to_string(), icon_font(8.5), Color32::WHITE);
+        }
 
         // Right side: when it was modified for files, the kind otherwise; Ctrl+n hints.
+        let recycling = selected && self.armed.as_ref().is_some_and(|(a, _)| a.starts_with("recycle:"));
         let right = match item.kind {
+            _ if recycling => "Press again".into(),
             Kind::File | Kind::Folder => item.modified.map(human_age).unwrap_or_default(),
             Kind::Command if matches!(&item.target, Target::Command { id } if self.armed.as_ref().is_some_and(|(a, _)| a == id)) => {
                 "Press Enter again".into()
@@ -632,7 +711,7 @@ impl SlothSearch {
             Kind::Command => item.subtitle.clone(),
             k => k.label().to_string(),
         };
-        let armed = right == "Press Enter again";
+        let armed = recycling || right == "Press Enter again";
         let p = ui.painter();
         let right_galley = p.layout_no_wrap(right, regular(12.0), if armed { pal.warn } else { pal.faint });
         let right_x = rect.right() - 22.0;
@@ -966,9 +1045,15 @@ impl SlothSearch {
         // Left: the most useful thing to say right now.
         let (g, text, color) = if let Some((t, _, err)) = &self.toast {
             (if *err { glyph::WARNING } else { '\u{E73E}' }, t.clone(), if *err { pal.warn } else { pal.accent_text })
+        } else if let Some(paths) = self.armed.as_ref().and_then(|(id, _)| id.strip_prefix("recycle:")) {
+            let paths: Vec<String> = paths.split('|').map(String::from).collect();
+            (glyph::DELETE, format!("Press Ctrl+Delete again to move {} to the Recycle Bin", super::count_or_name(&paths)), pal.warn)
         } else if let Some((id, _)) = &self.armed {
             let name = commands::find(id).map_or("do that", |c| c.name);
             (glyph::WARNING, format!("Press Enter again to {}", name.to_lowercase()), pal.warn)
+        } else if !self.marked.is_empty() {
+            let n = self.marked.len();
+            (glyph::CHECK, format!("{n} selected \u{00B7} drag them out, Ctrl+Shift+F copies, Ctrl+Delete recycles \u{00B7} Esc clears"), pal.accent_text)
         } else if let Some(w) = &self.warning {
             (glyph::WARNING, w.clone(), pal.warn)
         } else if self.index_age == Some(None) {

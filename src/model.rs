@@ -167,4 +167,6 @@ pub mod glyph {
     pub const RENAME: char = '\u{E8AC}';
     pub const EYEDROPPER: char = '\u{EF3C}';
     pub const SNIP: char = '\u{F406}';
+    pub const DELETE: char = '\u{E74D}';
+    pub const CHECK: char = '\u{E73E}';
 }

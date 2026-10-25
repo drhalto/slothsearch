@@ -32,7 +32,7 @@ pub fn eval(input: &str) -> Option<Answer> {
     if p.i != tokens.len() || !v.v.is_finite() {
         return None;
     }
-    let v = if v.pct { v.v / 100.0 } else { v.v };
+    let v = v.resolve();
     Some(Answer { display: format_num(v, true), copy: format_num(v, false), detail: s.to_string() })
 }
 
@@ -189,6 +189,12 @@ struct Val {
     pct: bool,
 }
 
+impl Val {
+    fn resolve(self) -> f64 {
+        if self.pct { self.v / 100.0 } else { self.v }
+    }
+}
+
 fn val(v: f64) -> Val {
     Val { v, pct: false }
 }
@@ -221,7 +227,7 @@ impl Parser<'_> {
             };
             self.i += 1;
             let right = self.term()?;
-            let l = if left.pct { left.v / 100.0 } else { left.v };
+            let l = left.resolve();
             left = match (op, right.pct) {
                 ('+', true) => val(l * (1.0 + right.v / 100.0)),
                 ('-', true) => val(l * (1.0 - right.v / 100.0)),
@@ -235,47 +241,46 @@ impl Parser<'_> {
     fn term(&mut self) -> Option<Val> {
         let mut left = self.unary()?;
         loop {
-            let resolve = |v: Val| if v.pct { v.v / 100.0 } else { v.v };
             match self.peek() {
                 Some(Tok::Op('*')) => {
                     self.i += 1;
                     let r = self.unary()?;
-                    left = val(resolve(left) * resolve(r));
+                    left = val(left.resolve() * r.resolve());
                 }
                 Some(Tok::Op('/')) => {
                     self.i += 1;
-                    let r = resolve(self.unary()?);
+                    let r = self.unary()?.resolve();
                     if r == 0.0 {
                         return None;
                     }
-                    left = val(resolve(left) / r);
+                    left = val(left.resolve() / r);
                 }
                 Some(Tok::Op('%')) => {
                     // Postfix % was handled in `postfix`; here it's modulo: `10 % 3`.
                     self.i += 1;
-                    let r = resolve(self.unary()?);
+                    let r = self.unary()?.resolve();
                     if r == 0.0 {
                         return None;
                     }
-                    left = val(resolve(left).rem_euclid(r));
+                    left = val(left.resolve().rem_euclid(r));
                 }
                 Some(Tok::Ident(n)) if n == "mod" => {
                     self.i += 1;
-                    let r = resolve(self.unary()?);
+                    let r = self.unary()?.resolve();
                     if r == 0.0 {
                         return None;
                     }
-                    left = val(resolve(left).rem_euclid(r));
+                    left = val(left.resolve().rem_euclid(r));
                 }
                 Some(Tok::Ident(n)) if n == "of" && left.pct => {
                     self.i += 1;
-                    let r = resolve(self.unary()?);
-                    left = val(left.v / 100.0 * r);
+                    let r = self.unary()?.resolve();
+                    left = val(left.resolve() * r);
                 }
                 Some(Tok::Num(_) | Tok::LParen) | Some(Tok::Ident(_)) => {
                     // Implicit multiplication: 2pi, 3(4), (1)(2).
                     let r = self.unary()?;
-                    left = val(resolve(left) * resolve(r));
+                    left = val(left.resolve() * r.resolve());
                 }
                 _ => break,
             }
@@ -298,7 +303,7 @@ impl Parser<'_> {
         let base = self.postfix()?;
         if self.eat(&Tok::Op('^')) {
             let exp = self.unary()?;
-            return Some(val(base.v.powf(exp.v)));
+            return Some(val(base.resolve().powf(exp.resolve())));
         }
         Some(base)
     }
@@ -309,7 +314,7 @@ impl Parser<'_> {
             match self.peek() {
                 Some(Tok::Op('!')) => {
                     self.i += 1;
-                    v = val(factorial(v.v)?);
+                    v = val(factorial(v.resolve())?);
                 }
                 Some(Tok::Op('%')) => {
                     // Percent sign unless an operand follows (then it's modulo).
@@ -320,7 +325,7 @@ impl Parser<'_> {
                         break;
                     }
                     self.i += 1;
-                    v = Val { v: v.v, pct: true };
+                    v = Val { v: v.resolve(), pct: true };
                 }
                 _ => break,
             }
@@ -349,15 +354,15 @@ impl Parser<'_> {
                     return None;
                 }
                 let args = if self.eat(&Tok::LParen) {
-                    let mut args = vec![self.expr()?.v];
+                    let mut args = vec![self.expr()?.resolve()];
                     while self.eat(&Tok::Comma) {
-                        args.push(self.expr()?.v);
+                        args.push(self.expr()?.resolve());
                     }
                     self.eat(&Tok::RParen);
                     args
                 } else {
                     // sqrt 16, sin pi
-                    vec![self.power()?.v]
+                    vec![self.power()?.resolve()]
                 };
                 apply(&name, &args).map(val)
             }
@@ -574,7 +579,7 @@ fn convert(s: &str) -> Option<Answer> {
             if p.i != tokens.len() {
                 return None;
             }
-            v.v
+            v.resolve()
         }
     };
     let out = if from.dim == Dim::Temp {
@@ -629,6 +634,19 @@ mod tests {
         assert_eq!(v("80 - 25%").as_deref(), Some("60"));
         assert_eq!(v("200 * 10%").as_deref(), Some("20"));
         assert_eq!(v("50%").as_deref(), Some("0.5"));
+    }
+
+    #[test]
+    fn percentages_in_numeric_contexts() {
+        assert_eq!(v("(50%)^2").as_deref(), Some("0.25"));
+        assert_eq!(v("4^(50%)").as_deref(), Some("2"));
+        assert_eq!(v("sqrt(50%)").as_deref(), Some("0.7071067812"));
+        assert_eq!(v("sqrt 25%").as_deref(), Some("0.5"));
+        assert_eq!(v("pow(25%, 50%)").as_deref(), Some("0.5"));
+        assert_eq!(v("min(75%, 25%)").as_deref(), Some("0.25"));
+        assert_eq!(v("(100%)!").as_deref(), Some("1"));
+        assert_eq!(v("50% m to cm").as_deref(), Some("50"));
+        assert_eq!(v("(50% + 15%) m to cm").as_deref(), Some("57.5"));
     }
 
     #[test]
