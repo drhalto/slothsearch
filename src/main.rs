@@ -111,7 +111,7 @@ fn cli(cmd: &str, rest: &[String]) {
             }
         }
         "calc" => println!("{:?}", calc::eval(&text)),
-        "snip" => println!("{:?}", snip::snip()),
+        "snip" => snip::snip(|o| println!("{o:?}")),
         // Replays typing through the background worker, as the window does.
         "typing" => {
             let (cfg, _) = config::load();

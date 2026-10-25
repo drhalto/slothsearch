@@ -489,7 +489,7 @@ impl SlothSearch {
                 self.restore = Some(r);
             }
             Msg::Snipped(outcome) => match outcome {
-                // Done: the snip is on the clipboard and the launcher stays away.
+                // Done: the snip is on the clipboard, in its preview, and the launcher stays away.
                 Some(Ok(Snipped::Image)) => self.away = None,
                 // A recording: back with the new file as the search, ready to open or drag.
                 Some(Ok(Snipped::Video(path))) => {
@@ -562,9 +562,13 @@ impl SlothSearch {
                     true
                 }
                 Overlay::Snip => {
-                    let outcome = crate::snip::snip();
-                    let back = !matches!(outcome, Some(Ok(Snipped::Image)));
-                    let _ = tx.send(Msg::Snipped(outcome));
+                    // A picture's preview keeps this thread until it closes; the launcher
+                    // hears as soon as the overlay is gone, so it's free for the next tool.
+                    let mut back = true;
+                    crate::snip::snip(|outcome| {
+                        back = !matches!(outcome, Some(Ok(Snipped::Image)));
+                        let _ = tx.send(Msg::Snipped(outcome));
+                    });
                     back
                 }
             };

@@ -1,9 +1,10 @@
 //! The snipping tool, laid out like Windows' own: the screen freezes and dims, and a
 //! small toolbar at the top picks how to snip (a dragged rectangle, a window, or a whole
-//! screen). The snip goes to the clipboard and into Pictures\Screenshots as a PNG.
-//! Esc, a right click or the toolbar's close button cancels.
+//! screen). The snip goes to the clipboard and opens in a preview, where Save as asks
+//! where to put the PNG. Esc, a right click or the toolbar's close button cancels.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
@@ -12,6 +13,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, w};
 
 use crate::overlay::{self, Dib, Frozen, colorref};
+
+mod preview;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Mode {
@@ -53,7 +56,7 @@ fn hint(mode: Mode, video: bool) -> &'static str {
 /// What a finished snip made.
 #[derive(Debug)]
 pub enum Outcome {
-    /// A picture: on the clipboard and saved in Screenshots.
+    /// A picture: on the clipboard, and up in its preview until saved or closed.
     Image,
     /// A recording, saved here (and copied as a file).
     Video(String),
@@ -101,11 +104,12 @@ thread_local! {
     static SNIP: RefCell<Option<Snip>> = const { RefCell::new(None) };
 }
 
-/// Runs the snipper on this thread (and, for a recording, records until Stop). None if
-/// cancelled; otherwise what it made, or what went wrong.
-pub fn snip() -> Option<Result<Outcome, String>> {
-    let Some(frozen) = Frozen::capture() else { return Some(Err("Couldn't capture the screen".into())) };
-    let Some(mut dim) = Dib::new(frozen.dib.w, frozen.dib.h) else { return Some(Err("Not enough memory to snip".into())) };
+/// Runs the snipper on this thread (and, for a recording, records until Stop), then
+/// tells `closed`: None if cancelled, otherwise what it made or what went wrong. A
+/// picture then stays up in its preview, on this thread, until it's saved or closed.
+pub fn snip(closed: impl FnOnce(Option<Result<Outcome, String>>)) {
+    let Some(frozen) = Frozen::capture() else { return closed(Some(Err("Couldn't capture the screen".into()))) };
+    let Some(mut dim) = Dib::new(frozen.dib.w, frozen.dib.h) else { return closed(Some(Err("Not enough memory to snip".into()))) };
     for (d, s) in dim.pixels_mut().iter_mut().zip(frozen.dib.pixels()) {
         *d = ((*s as u16 * 140) >> 8) as u8;
     }
@@ -135,23 +139,32 @@ pub fn snip() -> Option<Result<Outcome, String>> {
     });
     let done = || SNIP.with(|p| p.borrow().as_ref().is_none_or(|p| p.result.is_some()));
     overlay::run(area, w!("SlothSearchSnip"), w!("Snip"), Some(proc), done);
-    let s = SNIP.with(|p| p.borrow_mut().take())?;
-    let r = s.result.flatten()?;
+    let Some(s) = SNIP.with(|p| p.borrow_mut().take()) else { return closed(None) };
+    let Some(r) = s.result.flatten() else { return closed(None) };
     let r = RECT { left: r.left.max(0), top: r.top.max(0), right: r.right.min(s.frozen.dib.w), bottom: r.bottom.min(s.frozen.dib.h) };
     if r.right - r.left < 1 || r.bottom - r.top < 1 {
-        return None;
+        return closed(None);
     }
+    let o = s.frozen.origin;
+    let screen = RECT { left: r.left + o.x, top: r.top + o.y, right: r.right + o.x, bottom: r.bottom + o.y };
     if s.video {
-        let o = s.frozen.origin;
         drop(s); // Let go of the frozen screen before recording the live one.
-        let screen = RECT { left: r.left + o.x, top: r.top + o.y, right: r.right + o.x, bottom: r.bottom + o.y };
-        return Some(crate::record::record(screen).map(|p| {
+        return closed(Some(crate::record::record(screen).map(|p| {
             let p = p.to_string_lossy().into_owned();
             crate::launch::copy_files(&[&p]);
             Outcome::Video(p)
-        }));
+        })));
     }
-    Some(save(&s.frozen.dib, r).map(|_| Outcome::Image))
+    let shot = Shot::new(&s.frozen.dib, r, screen);
+    drop(s);
+    match shot {
+        Ok(shot) => {
+            let copied = shot.copy();
+            closed(Some(Ok(Outcome::Image)));
+            preview::show(shot, copied);
+        }
+        Err(e) => closed(Some(Err(e))),
+    }
 }
 
 fn monitors() -> Vec<RECT> {
@@ -218,61 +231,69 @@ fn bar_layout(at: POINT, origin: POINT) -> Bar {
     }
 }
 
-/// Copies the rectangle to the clipboard (as a bitmap and as PNG) and saves the PNG.
-fn save(dib: &Dib, r: RECT) -> Result<String, String> {
-    let (w, h) = (r.right - r.left, r.bottom - r.top);
-    let px = dib.pixels();
-    let row = |y: i32| {
-        let i = ((y * dib.w + r.left) * 4) as usize;
-        &px[i..i + (w * 4) as usize]
-    };
+/// A finished picture: what the preview shows, and the bytes it copies and saves.
+struct Shot {
+    img: Dib,
+    png: Vec<u8>,
+    /// The same picture as CF_DIB: a BITMAPINFOHEADER, then bottom-up BGRA rows.
+    clip: Vec<u8>,
+    /// Where it was taken, in screen coordinates; the preview opens on that monitor.
+    at: RECT,
+    /// Where Save as starts: Pictures\Screenshots, named for when it was taken.
+    suggested: PathBuf,
+}
 
-    let mut rgb = Vec::with_capacity((w * h * 3) as usize);
-    for y in r.top..r.bottom {
-        for p in row(y).chunks_exact(4) {
-            rgb.extend_from_slice(&[p[2], p[1], p[0]]);
+impl Shot {
+    /// Cuts `r` out of the frozen screen and encodes it.
+    fn new(dib: &Dib, r: RECT, at: RECT) -> Result<Shot, String> {
+        let (w, h) = (r.right - r.left, r.bottom - r.top);
+        let img = Dib::new(w, h).ok_or("Not enough memory to snip")?;
+        unsafe {
+            let _ = BitBlt(img.dc, 0, 0, w, h, Some(dib.dc), r.left, r.top, SRCCOPY);
         }
-    }
-    let mut png_bytes = Vec::new();
-    {
-        let mut enc = png::Encoder::new(&mut png_bytes, w as u32, h as u32);
-        enc.set_color(png::ColorType::Rgb);
-        enc.set_depth(png::BitDepth::Eight);
-        let mut writer = enc.write_header().map_err(|e| format!("Couldn't encode the snip: {e}"))?;
-        writer.write_image_data(&rgb).map_err(|e| format!("Couldn't encode the snip: {e}"))?;
-    }
+        let px = img.pixels();
+        let row = |y: i32| &px[(y * w * 4) as usize..((y + 1) * w * 4) as usize];
 
-    // CF_DIB: a BITMAPINFOHEADER, then bottom-up BGRA rows with opaque alpha.
-    let mut dib_bytes = Vec::with_capacity(40 + (w * h * 4) as usize);
-    for v in [40u32, w as u32, h as u32] {
-        dib_bytes.extend_from_slice(&v.to_le_bytes());
-    }
-    dib_bytes.extend_from_slice(&1u16.to_le_bytes());
-    dib_bytes.extend_from_slice(&32u16.to_le_bytes());
-    for v in [0u32, (w * h * 4) as u32, 0, 0, 0, 0] {
-        dib_bytes.extend_from_slice(&v.to_le_bytes());
-    }
-    for y in (r.top..r.bottom).rev() {
-        for p in row(y).chunks_exact(4) {
-            dib_bytes.extend_from_slice(&[p[0], p[1], p[2], 255]);
+        let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+        for y in 0..h {
+            for p in row(y).chunks_exact(4) {
+                rgb.extend_from_slice(&[p[2], p[1], p[0]]);
+            }
         }
-    }
-    let copied = crate::launch::copy_image(&dib_bytes, &png_bytes);
+        let mut png = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut png, w as u32, h as u32);
+            enc.set_color(png::ColorType::Rgb);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut writer = enc.write_header().map_err(|e| format!("Couldn't encode the snip: {e}"))?;
+            writer.write_image_data(&rgb).map_err(|e| format!("Couldn't encode the snip: {e}"))?;
+        }
 
-    let path = screenshot_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        let mut clip = Vec::with_capacity(40 + (w * h * 4) as usize);
+        for v in [40u32, w as u32, h as u32] {
+            clip.extend_from_slice(&v.to_le_bytes());
+        }
+        clip.extend_from_slice(&1u16.to_le_bytes());
+        clip.extend_from_slice(&32u16.to_le_bytes());
+        for v in [0u32, (w * h * 4) as u32, 0, 0, 0, 0] {
+            clip.extend_from_slice(&v.to_le_bytes());
+        }
+        for y in (0..h).rev() {
+            for p in row(y).chunks_exact(4) {
+                clip.extend_from_slice(&[p[0], p[1], p[2], 255]);
+            }
+        }
+        Ok(Shot { img, png, clip, at, suggested: screenshot_path() })
     }
-    match std::fs::write(&path, &png_bytes) {
-        Ok(()) if copied => Ok(path.to_string_lossy().into_owned()),
-        Ok(()) => Err("Saved the snip, but the clipboard was busy".into()),
-        Err(e) if copied => Err(format!("Copied the snip, but couldn't save it: {e}")),
-        Err(e) => Err(format!("Couldn't copy or save the snip: {e}")),
+
+    /// Puts it on the clipboard, as a bitmap and as PNG.
+    fn copy(&self) -> bool {
+        crate::launch::copy_image(&self.clip, &self.png)
     }
 }
 
 /// Pictures\Screenshots (wherever Windows keeps it), named the way Windows names them.
-fn screenshot_path() -> std::path::PathBuf {
+fn screenshot_path() -> PathBuf {
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::UI::Shell::{FOLDERID_Screenshots, KNOWN_FOLDER_FLAG, SHGetKnownFolderPath};
     let dir = unsafe {
@@ -526,22 +547,7 @@ fn draw_bar(dc: HDC, p: &Snip) {
     let px = |v: f32| (v * b.s).round() as i32;
     unsafe {
         rounded(dc, b.rect, px(12.0), BG, Some(EDGE));
-        let icons = CreateFontW(
-            -px(16.0),
-            0,
-            0,
-            0,
-            400,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            ANTIALIASED_QUALITY,
-            0,
-            w!("Segoe Fluent Icons"),
-        );
+        let icons = icon_font(px(16.0));
         let of = SelectObject(dc, icons.into());
         for (i, r) in b.buttons.iter().enumerate() {
             let on = match BUTTONS[i].0 {
@@ -578,6 +584,28 @@ fn draw_bar(dc: HDC, p: &Snip) {
         }
         SelectObject(dc, op);
         let _ = DeleteObject(pen.into());
+    }
+}
+
+/// Segoe Fluent Icons at a pixel size; delete it with DeleteObject.
+fn icon_font(px: i32) -> HFONT {
+    unsafe {
+        CreateFontW(
+            -px,
+            0,
+            0,
+            0,
+            400,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            ANTIALIASED_QUALITY,
+            0,
+            w!("Segoe Fluent Icons"),
+        )
     }
 }
 
