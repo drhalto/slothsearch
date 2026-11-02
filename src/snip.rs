@@ -294,19 +294,9 @@ impl Shot {
 
 /// Pictures\Screenshots (wherever Windows keeps it), named the way Windows names them.
 fn screenshot_path() -> PathBuf {
-    use windows::Win32::System::Com::CoTaskMemFree;
-    use windows::Win32::UI::Shell::{FOLDERID_Screenshots, KNOWN_FOLDER_FLAG, SHGetKnownFolderPath};
-    let dir = unsafe {
-        match SHGetKnownFolderPath(&FOLDERID_Screenshots, KNOWN_FOLDER_FLAG(0), None) {
-            Ok(p) => {
-                let s = p.to_string().unwrap_or_default();
-                CoTaskMemFree(Some(p.0 as _));
-                s
-            }
-            Err(_) => String::new(),
-        }
-    };
-    let dir = if dir.is_empty() { std::path::PathBuf::from(crate::util::home()).join("Pictures").join("Screenshots") } else { dir.into() };
+    use windows::Win32::UI::Shell::FOLDERID_Screenshots;
+    let dir = crate::util::known_folder(&FOLDERID_Screenshots)
+        .map_or_else(|| PathBuf::from(crate::util::home()).join("Pictures").join("Screenshots"), PathBuf::from);
     let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
     let stem = format!("Screenshot {:04}-{:02}-{:02} {:02}{:02}{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
     let mut path = dir.join(format!("{stem}.png"));

@@ -37,10 +37,12 @@ impl eframe::App for SlothSearch {
         }
     }
 
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         if !self.visible {
             return;
         }
+        // Keys held back last frame go first: they came before this frame's input.
+        self.keys.append(&mut self.keys_next);
         // Windows' drag loop ate the mouse-up; tell egui the button is free again.
         if std::mem::take(&mut self.release_pointer) {
             raw.events.insert(0, Event::PointerButton {
@@ -94,7 +96,15 @@ impl eframe::App for SlothSearch {
             taken.push(cmd);
             false
         });
-        self.keys.extend(taken);
+        // Keys handled here run before the search box sees this frame's text. If they came
+        // in with typing ("chrome" and Enter in one batch, typed ahead while the launcher
+        // opened), they wait a frame so Enter acts on the results for the new text.
+        if !taken.is_empty() && raw.events.iter().any(edits_text) {
+            self.keys_next.extend(taken);
+            ctx.request_repaint();
+        } else {
+            self.keys.extend(taken);
+        }
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -129,6 +139,7 @@ impl eframe::App for SlothSearch {
                 self.visible = false;
                 self.hidden_at = Instant::now();
                 self.keys.clear();
+                self.keys_next.clear();
                 shell::hide(self.hwnd);
                 if let Some(which) = self.overlay_start.take() {
                     self.spawn_overlay(which);
@@ -325,6 +336,8 @@ impl SlothSearch {
                     if self.selected_item().is_some() {
                         self.actions_open = true;
                         self.action_sel = 0;
+                        self.action_top = 0;
+                        self.action_wheel = 0.0;
                     }
                 }
                 KeyCmd::DropScope => {
@@ -598,6 +611,8 @@ impl SlothSearch {
         ScrollArea::vertical()
             .id_salt("results")
             .auto_shrink([false, false])
+            // The open actions menu takes the wheel.
+            .scroll_source(egui::containers::scroll_area::ScrollSource { mouse_wheel: !self.actions_open, ..Default::default() })
             .max_height(rect.height())
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
@@ -653,6 +668,8 @@ impl SlothSearch {
             self.user_moved = true;
             self.actions_open = true;
             self.action_sel = 0;
+            self.action_top = 0;
+            self.action_wheel = 0.0;
         } else if let Some(i) = clicked {
             self.actions_open = false;
             self.armed = None;
@@ -713,9 +730,11 @@ impl SlothSearch {
         };
         let armed = recycling || right == "Press Enter again";
         let p = ui.painter();
-        let right_galley = p.layout_no_wrap(right, regular(12.0), if armed { pal.warn } else { pal.faint });
+        // Faint text is too dim on the selected row's highlight.
+        let quiet = if selected { pal.dim } else { pal.faint };
+        let right_galley = p.layout_no_wrap(right, regular(12.0), if armed { pal.warn } else { quiet });
         let right_x = rect.right() - 22.0;
-        p.galley(pos2(right_x - right_galley.size().x, rect.center().y - right_galley.size().y / 2.0), right_galley.clone(), pal.faint);
+        p.galley(pos2(right_x - right_galley.size().x, rect.center().y - right_galley.size().y / 2.0), right_galley.clone(), quiet);
 
         let text_left = icon_rect.right() + 12.0;
         let max_w = (right_x - right_galley.size().x - 14.0 - text_left).max(40.0);
@@ -746,7 +765,10 @@ impl SlothSearch {
             Some(_) => None,
             None => {
                 self.textures.insert(slot, IconState::Pending);
-                self.icons.request(key.clone(), px);
+                // Requests dropped from a long backlog are asked again when next on screen.
+                for job in self.icons.request(key.clone(), px) {
+                    self.textures.remove(&job);
+                }
                 None
             }
         }
@@ -1134,22 +1156,45 @@ impl SlothSearch {
             return;
         };
         let acts = self.actions_for(&item);
-        let row_h = 34.0;
-        let h = 40.0 + acts.len() as f32 * row_h + 8.0;
+        let n = acts.len();
         let w = 320.0;
+        // As tall as its actions, up to the room between the search bar and the footer;
+        // past that it scrolls.
+        let rows = menu_rows(bottom - (panel.top() + SEARCH_H) - 16.0, n);
+        self.action_top = menu_top(self.action_top, self.action_sel, rows, n);
+        let h = MENU_CHROME + rows as f32 * ACTION_ROW_H;
         let rect = Rect::from_min_size(pos2(panel.right() - w - 10.0, bottom - h - 8.0), vec2(w, h));
+        // The wheel scrolls it (the list underneath holds still) and takes the selection along.
+        if n > rows && ui.input(|i| i.pointer.hover_pos()).is_some_and(|pt| rect.contains(pt)) {
+            self.action_wheel += ui.input(|i| i.smooth_scroll_delta.y);
+            let steps = (self.action_wheel / ACTION_ROW_H).trunc();
+            self.action_wheel -= steps * ACTION_ROW_H;
+            if steps != 0.0 {
+                self.action_top = (self.action_top as i64 - steps as i64).clamp(0, (n - rows) as i64) as usize;
+                self.action_sel = self.action_sel.clamp(self.action_top, self.action_top + rows - 1);
+            }
+        }
         let p = ui.painter().clone();
         let r = CornerRadius::same(11);
         p.add(Shadow { offset: [0, 8], blur: 28, spread: 0, color: pal.shadow }.as_shape(rect, r));
         let bg = if pal.dark { Color32::from_rgb(40, 40, 46) } else { Color32::from_rgb(255, 255, 255) };
         p.rect_filled(rect, r, bg);
         p.rect_stroke(rect, r, Stroke::new(1.0, pal.border), StrokeKind::Inside);
-        let title = truncated(&item.title, semibold(12.0), pal.faint, w - 32.0);
+        let more = n > rows;
+        let title = truncated(&item.title, semibold(12.0), pal.faint, w - if more { 72.0 } else { 32.0 });
         p.galley(pos2(rect.left() + 16.0, rect.top() + 14.0), title, pal.faint);
+        if more {
+            // Which way the hidden actions are.
+            let y = rect.top() + 21.0;
+            let (up, down) = (self.action_top > 0, self.action_top + rows < n);
+            p.text(pos2(rect.right() - 36.0, y), Align2::CENTER_CENTER, '\u{E70E}'.to_string(), icon_font(10.0), if up { pal.dim } else { pal.divider });
+            p.text(pos2(rect.right() - 18.0, y), Align2::CENTER_CENTER, '\u{E70D}'.to_string(), icon_font(10.0), if down { pal.dim } else { pal.divider });
+        }
 
         let mut run = None;
-        for (i, a) in acts.iter().enumerate() {
-            let rr = Rect::from_min_size(pos2(rect.left() + 6.0, rect.top() + 38.0 + i as f32 * row_h), vec2(w - 12.0, row_h));
+        for (i, a) in acts.iter().enumerate().skip(self.action_top).take(rows) {
+            let y = rect.top() + 38.0 + (i - self.action_top) as f32 * ACTION_ROW_H;
+            let rr = Rect::from_min_size(pos2(rect.left() + 6.0, y), vec2(w - 12.0, ACTION_ROW_H));
             let resp = ui.interact(rr, egui::Id::new(("action", i)), Sense::click());
             if resp.hovered() && moved {
                 self.action_sel = i;
@@ -1230,6 +1275,35 @@ impl SlothSearch {
             self.filter_menu = false;
         }
     }
+}
+
+/// Input the search box turns into a change of its text.
+fn edits_text(e: &Event) -> bool {
+    matches!(
+        e,
+        Event::Text(_) | Event::Paste(_) | Event::Cut | Event::Ime(_) | Event::Key { key: Key::Backspace | Key::Delete, pressed: true, .. }
+    )
+}
+
+const ACTION_ROW_H: f32 = 34.0;
+/// The actions menu's title row and bottom padding.
+const MENU_CHROME: f32 = 48.0;
+
+/// How many action rows fit in `room` points of height, menu chrome included.
+fn menu_rows(room: f32, n: usize) -> usize {
+    (((room - MENU_CHROME) / ACTION_ROW_H).floor().max(1.0) as usize).min(n)
+}
+
+/// The first action row shown: moved only as far as it takes to keep the selection in view.
+fn menu_top(top: usize, sel: usize, rows: usize, n: usize) -> usize {
+    let top = if sel < top {
+        sel
+    } else if sel >= top + rows {
+        sel + 1 - rows
+    } else {
+        top
+    };
+    top.min(n.saturating_sub(rows))
 }
 
 /// Draws keycaps right-aligned ending at `right`; returns the left edge.
@@ -1318,4 +1392,33 @@ fn is_thumbable(ext: &str) -> bool {
             | "avi" | "webm" | "wmv" | "m4v" | "pdf" | "psd" | "blend" | "stl" | "3mf" | "glb" | "fbx" | "obj" | "docx"
             | "xlsx" | "pptx"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn actions_menu_fits_and_follows_the_selection() {
+        // The full panel: the menu sits above the footer, below the search bar.
+        let panel = Rect::from_min_size(pos2(MARGIN, MARGIN), vec2(PANEL_W, SEARCH_H + LIST_H + FOOTER_H));
+        let bottom = panel.bottom() - FOOTER_H;
+        let room = bottom - (panel.top() + SEARCH_H) - 16.0;
+        // A pinned folder opened before, on the empty-box screen, offers 14 actions.
+        let rows = menu_rows(room, 14);
+        assert!(rows < 14);
+        let h = MENU_CHROME + rows as f32 * ACTION_ROW_H;
+        assert!(bottom - h - 8.0 >= panel.top() + SEARCH_H);
+        // Short lists are as tall as they need to be.
+        assert_eq!(menu_rows(room, 3), 3);
+
+        // Walking down scrolls one row at a time; walking back up doesn't jump.
+        assert_eq!(menu_top(0, rows - 1, rows, 14), 0);
+        assert_eq!(menu_top(0, rows, rows, 14), 1);
+        assert_eq!(menu_top(3, 13, rows, 14), 14 - rows);
+        assert_eq!(menu_top(14 - rows, 10, rows, 14), 14 - rows);
+        assert_eq!(menu_top(3, 2, rows, 14), 2);
+        // A shorter list after a rebuild pulls the window back.
+        assert_eq!(menu_top(5, 0, 3, 3), 0);
+    }
 }

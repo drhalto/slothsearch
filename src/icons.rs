@@ -62,21 +62,24 @@ impl Loader {
         Loader { q }
     }
 
-    /// Queues a request; repeats of something already waiting are ignored.
-    pub fn request(&self, key: IconKey, size: u32) {
+    /// Queues a request; repeats of something already waiting are ignored. Returns the
+    /// requests dropped to make room, which will never get an answer.
+    pub fn request(&self, key: IconKey, size: u32) -> Vec<(IconKey, u32)> {
         let (lock, cv) = &*self.q;
         let mut g = lock.lock().unwrap();
+        let mut dropped = Vec::new();
         if g.queued.insert((key.clone(), size)) {
             g.stack.push((key, size));
             // Don't let a fast scroll build a backlog of rows nobody will see.
             if g.stack.len() > 400 {
-                let old: Vec<_> = g.stack.drain(..200).collect();
-                for job in old {
-                    g.queued.remove(&job);
+                dropped = g.stack.drain(..200).collect();
+                for job in &dropped {
+                    g.queued.remove(job);
                 }
             }
             cv.notify_one();
         }
+        dropped
     }
 }
 
@@ -135,5 +138,25 @@ unsafe fn bitmap_pixels(hbmp: HBITMAP) -> Option<Image> {
             }
         }
         Some(Image { size: [w as usize, h as usize], rgba: px })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropped_requests_are_reported() {
+        // No worker, so nothing leaves the queue but the backlog trim.
+        let loader = Loader { q: Arc::default() };
+        for i in 0..400 {
+            assert!(loader.request(IconKey::Path(format!("C:/{i}")), 32).is_empty());
+        }
+        let dropped = loader.request(IconKey::Path("C:/400".into()), 32);
+        assert_eq!(dropped.len(), 200);
+        assert_eq!(dropped[0], (IconKey::Path("C:/0".into()), 32));
+        // A dropped one can be asked for again.
+        assert!(loader.request(IconKey::Path("C:/0".into()), 32).is_empty());
+        assert_eq!(loader.q.0.lock().unwrap().stack.len(), 202);
     }
 }

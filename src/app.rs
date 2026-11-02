@@ -182,8 +182,14 @@ pub struct SlothSearch {
     pending_since: Option<Instant>,
 
     keys: Vec<KeyCmd>,
+    /// Keys that came in with typing, held a frame so the search box takes the text first.
+    keys_next: Vec<KeyCmd>,
     actions_open: bool,
     action_sel: usize,
+    /// The actions menu's first visible row, when it's too tall to show them all.
+    action_top: usize,
+    /// Wheel movement over the actions menu not yet worth a whole row.
+    action_wheel: f32,
 
     visible: bool,
     boot_frames: u8,
@@ -306,8 +312,11 @@ impl SlothSearch {
             files_ms: 0,
             pending_since: None,
             keys: Vec::new(),
+            keys_next: Vec::new(),
             actions_open: false,
             action_sel: 0,
+            action_top: 0,
+            action_wheel: 0.0,
             visible: false,
             boot_frames: 0,
             hiding: 0,
@@ -378,7 +387,15 @@ impl SlothSearch {
             return;
         }
         self.cfg_mtime = m;
-        let (cfg, err) = config::load();
+        let (cfg, err) = match config::read(&config::path()) {
+            Ok(loaded) => loaded,
+            // Locked mid-save or not UTF-8: keep the settings in use, and look again next time.
+            Err(e) => {
+                self.warning = Some(e);
+                self.cfg_mtime = None;
+                return;
+            }
+        };
         shell::update_settings(&cfg.hotkey, &cfg.switcher_hotkey, cfg.explorer_scope);
         self.pal = theme::palette(theme::wants_dark(&cfg.theme));
         self.engine.cfg = cfg;
@@ -695,6 +712,7 @@ impl SlothSearch {
             .and_then(|k| self.flat.iter().position(|&(s, i)| ident(&self.sections[s].items[i]) == k))
             .unwrap_or(0);
         self.action_sel = 0;
+        self.action_top = 0;
     }
 
     fn selected_item(&self) -> Option<&Item> {

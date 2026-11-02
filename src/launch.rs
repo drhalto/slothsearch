@@ -255,7 +255,7 @@ fn open(item: &Item, env: &Env) -> Outcome {
         Target::Color { rgb } => copied(&crate::colorpick::hex(*rgb)),
         Target::Url { url } => match url.strip_prefix("everything:") {
             Some(search) => {
-                let ok = Command::new("C:\\Program Files\\Everything\\Everything.exe").arg("-search").arg(search).spawn().is_ok();
+                let ok = Command::new(everything_exe()).arg("-search").arg(search).spawn().is_ok();
                 done(ok)
             }
             None => done(shell(None, url, None)),
@@ -269,10 +269,10 @@ pub fn run_command(r: Run) -> Outcome {
     match r {
         Run::Open(target) => done(shell(None, &expand_env(target), None)),
         Run::Exe(exe, args) => done(shell(None, exe, (!args.is_empty()).then_some(args))),
-        Run::Home(sub) => {
-            let p = if sub.is_empty() { home() } else { format!("{}\\{sub}", home()) };
-            done(shell(None, &p, None))
-        }
+        Run::Folder(id) => match crate::util::known_folder(&id) {
+            Some(p) => done(shell(None, &p, None)),
+            None => Outcome::Error("Windows couldn't say where that folder is".into()),
+        },
         Run::Lock => done(unsafe { LockWorkStation() }.is_ok()),
         Run::Sleep => {
             // Hide first; sleeping with the launcher up looks odd on wake.
@@ -516,8 +516,10 @@ pub fn drag_files(hwnd: isize, paths: &[String]) -> bool {
 }
 
 /// Folders too big or too central to recycle from a search box: drive roots, top-level
-/// folders (C:\Windows, C:\Users), your home folder and its standard folders.
+/// folders (C:\Windows, C:\Users), your home folder and its standard folders, wherever
+/// OneDrive or a redirect has put them.
 pub fn too_important(path: &str) -> bool {
+    use windows::Win32::UI::Shell::{FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Videos};
     let p = path.trim_end_matches('\\');
     if p.split('\\').filter(|s| !s.is_empty()).count() <= 2 {
         return true;
@@ -528,6 +530,10 @@ pub fn too_important(path: &str) -> bool {
         || ["Desktop", "Documents", "Downloads", "Pictures", "Videos", "Music", "AppData", "OneDrive"]
             .iter()
             .any(|d| lower == format!("{home}\\{d}").to_lowercase())
+        || [FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Pictures, FOLDERID_Videos, FOLDERID_Music]
+            .iter()
+            .filter_map(crate::util::known_folder)
+            .any(|k| k.trim_end_matches('\\').to_lowercase() == lower)
 }
 
 /// Moves files and folders to the Recycle Bin. Windows still asks before anything would be
@@ -636,10 +642,32 @@ pub fn set_startup(on: bool) {
 
 /// Restarts Everything's tray client (the index service keeps running).
 pub fn restart_everything() -> bool {
+    // Found before it's gone: a portable copy isn't under Program Files.
+    let exe = everything_exe();
     // Only our session's client; the service lives in session 0.
-    let _ = hidden("taskkill.exe", &["/im", "Everything.exe", "/f", "/fi", "SESSION ne 0"]);
+    let _ = hidden("taskkill.exe", &["/im", crate::util::file_name(&exe), "/f", "/fi", "SESSION ne 0"]);
     std::thread::sleep(std::time::Duration::from_millis(600));
-    Command::new("C:\\Program Files\\Everything\\Everything.exe").arg("-startup").spawn().is_ok()
+    Command::new(&exe).arg("-startup").spawn().is_ok()
+}
+
+/// Everything's own program: the running copy's, else wherever its installer puts it.
+fn everything_exe() -> String {
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId};
+    let running = unsafe { FindWindowW(w!("EVERYTHING_TASKBAR_NOTIFICATION"), PCWSTR::null()) }.ok().map(|h| {
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
+        wins::process_path(pid)
+    });
+    running
+        .filter(|p| !p.is_empty())
+        .or_else(|| {
+            ["ProgramFiles", "ProgramFiles(x86)"]
+                .iter()
+                .filter_map(|v| std::env::var(v).ok())
+                .map(|d| format!("{d}\\Everything\\Everything.exe"))
+                .find(|p| std::path::Path::new(p).exists())
+        })
+        .unwrap_or_else(|| "C:\\Program Files\\Everything\\Everything.exe".into())
 }
 
 #[cfg(test)]
@@ -685,6 +713,17 @@ mod tests {
         assert!(too_important(&format!("{home}\\downloads\\")));
         assert!(!too_important(&format!("{home}\\Downloads\\old.zip")));
         assert!(!too_important("D:\\Projects\\scratch"));
+        // Wherever Windows says Documents is (OneDrive moves it), it's protected too.
+        let docs = crate::util::known_folder(&windows::Win32::UI::Shell::FOLDERID_Documents).unwrap();
+        assert!(too_important(&docs));
+    }
+
+    #[test]
+    fn everything_is_found_where_it_runs_or_is_installed() {
+        let exe = everything_exe();
+        assert!(exe.to_lowercase().ends_with(".exe"), "{exe}");
+        // Running (the IPC needs it) or installed, it's a real file.
+        assert!(std::path::Path::new(&exe).exists(), "{exe}");
     }
 
     /// Puts a real file in the Recycle Bin, so it only runs when asked:

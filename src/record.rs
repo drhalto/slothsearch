@@ -220,19 +220,8 @@ unsafe fn draw_cursor(dc: HDC, area: RECT) {
 
 /// Videos\Screen Recordings, named the way the Snipping Tool names recordings.
 fn recording_path() -> PathBuf {
-    use windows::Win32::System::Com::CoTaskMemFree;
-    use windows::Win32::UI::Shell::{FOLDERID_Videos, KNOWN_FOLDER_FLAG, SHGetKnownFolderPath};
-    let videos = unsafe {
-        match SHGetKnownFolderPath(&FOLDERID_Videos, KNOWN_FOLDER_FLAG(0), None) {
-            Ok(p) => {
-                let s = p.to_string().unwrap_or_default();
-                CoTaskMemFree(Some(p.0 as _));
-                s
-            }
-            Err(_) => String::new(),
-        }
-    };
-    let videos = if videos.is_empty() { PathBuf::from(crate::util::home()).join("Videos") } else { videos.into() };
+    use windows::Win32::UI::Shell::FOLDERID_Videos;
+    let videos = crate::util::known_folder(&FOLDERID_Videos).map_or_else(|| PathBuf::from(crate::util::home()).join("Videos"), PathBuf::from);
     let dir = videos.join("Screen Recordings");
     let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
     let stem = format!("Screen Recording {:04}-{:02}-{:02} {:02}{:02}{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);

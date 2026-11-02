@@ -60,7 +60,8 @@ pub fn palette(dark: bool) -> Palette {
             divider: Color32::from_rgba_unmultiplied(255, 255, 255, 16),
             text: Color32::from_rgb(0xEE, 0xEE, 0xF1),
             dim: Color32::from_rgb(0x9E, 0x9E, 0xA7),
-            faint: Color32::from_rgb(0x70, 0x70, 0x79),
+            // 5.2:1 on the panel, 4.6:1 in the menus (WCAG AA wants 4.5:1).
+            faint: Color32::from_rgb(0x8F, 0x8F, 0x98),
             selected: Color32::from_rgba_unmultiplied(255, 255, 255, 20),
             hover: Color32::from_rgba_unmultiplied(255, 255, 255, 9),
             accent,
@@ -81,7 +82,8 @@ pub fn palette(dark: bool) -> Palette {
             divider: Color32::from_rgba_unmultiplied(0, 0, 0, 16),
             text: Color32::from_rgb(0x1B, 0x1B, 0x1F),
             dim: Color32::from_rgb(0x5E, 0x5E, 0x67),
-            faint: Color32::from_rgb(0x8B, 0x8B, 0x94),
+            // 5.2:1 on the panel, 4.5:1 on a selected row.
+            faint: Color32::from_rgb(0x6A, 0x6A, 0x73),
             selected: Color32::from_rgba_unmultiplied(0, 0, 0, 15),
             hover: Color32::from_rgba_unmultiplied(0, 0, 0, 7),
             accent,

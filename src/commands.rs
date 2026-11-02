@@ -7,8 +7,8 @@ pub enum Run {
     Open(&'static str),
     /// A program plus arguments.
     Exe(&'static str, &'static str),
-    /// A folder under the user profile.
-    Home(&'static str),
+    /// One of Windows' known folders (Downloads, Documents...), wherever it's been moved.
+    Folder(GUID),
     Lock,
     Sleep,
     Restart,
@@ -52,6 +52,10 @@ const fn risky(id: &'static str, name: &'static str, keywords: &'static str, gly
 }
 
 use Run::*;
+use windows::Win32::UI::Shell::{
+    FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_Videos,
+};
+use windows::core::GUID;
 
 pub const COMMANDS: &[Command] = &[
     // Session and power
@@ -116,13 +120,13 @@ pub const COMMANDS: &[Command] = &[
     cmd("mmsys", "Sound control panel", "playback recording devices mmsys", '\u{E767}', Open("mmsys.cpl")),
     cmd("powercfg", "Power options", "power plan powercfg", '\u{E83F}', Open("powercfg.cpl")),
     // Folders
-    cmd("home", "Home folder", "user profile", '\u{E80F}', Home("")),
-    cmd("downloads", "Downloads", "downloads", '\u{E896}', Home("Downloads")),
-    cmd("documents", "Documents", "documents docs", '\u{E8A5}', Home("Documents")),
-    cmd("desktop", "Desktop", "desktop", '\u{E7F8}', Home("Desktop")),
-    cmd("pictures", "Pictures", "pictures photos images", '\u{EB9F}', Home("Pictures")),
-    cmd("videos", "Videos", "videos movies", '\u{E714}', Home("Videos")),
-    cmd("music", "Music", "music songs", '\u{E8D6}', Home("Music")),
+    cmd("home", "Home folder", "user profile", '\u{E80F}', Folder(FOLDERID_Profile)),
+    cmd("downloads", "Downloads", "downloads", '\u{E896}', Folder(FOLDERID_Downloads)),
+    cmd("documents", "Documents", "documents docs", '\u{E8A5}', Folder(FOLDERID_Documents)),
+    cmd("desktop", "Desktop", "desktop", '\u{E7F8}', Folder(FOLDERID_Desktop)),
+    cmd("pictures", "Pictures", "pictures photos images", '\u{EB9F}', Folder(FOLDERID_Pictures)),
+    cmd("videos", "Videos", "videos movies", '\u{E714}', Folder(FOLDERID_Videos)),
+    cmd("music", "Music", "music songs", '\u{E8D6}', Folder(FOLDERID_Music)),
     cmd("temp", "Temp folder", "temporary tmp", '\u{E8B7}', Open("%TEMP%")),
     cmd("appdata", "AppData", "roaming appdata", '\u{E8B7}', Open("%APPDATA%")),
     cmd("startupfolder", "Startup folder", "startup shell:startup", '\u{E8B7}', Open("shell:startup")),

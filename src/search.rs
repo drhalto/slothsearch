@@ -869,7 +869,7 @@ pub fn project_item(p: &Project) -> Item {
 pub fn command_item(c: &Command) -> Item {
     let sub = match c.run {
         Run::Open(u) if u.starts_with("ms-settings") => "Settings",
-        Run::Home(_) => "Folder",
+        Run::Folder(_) => "Folder",
         Run::Open(u) if u.starts_with("shell:") || u.starts_with('%') => "Folder",
         Run::App(_) => "SlothSearch",
         Run::Lock | Run::Sleep | Run::Restart | Run::ShutDown | Run::SignOut => "System",

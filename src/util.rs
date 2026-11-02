@@ -17,6 +17,19 @@ pub fn home() -> String {
     std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".into())
 }
 
+/// Where Windows keeps one of its known folders (Downloads, Screenshots...), wherever it
+/// was moved: OneDrive's folder backup moves Desktop, Documents and Pictures out of home.
+pub fn known_folder(id: &windows::core::GUID) -> Option<String> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{KNOWN_FOLDER_FLAG, SHGetKnownFolderPath};
+    unsafe {
+        let p = SHGetKnownFolderPath(id, KNOWN_FOLDER_FLAG(0), None).ok()?;
+        let s = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as _));
+        s.filter(|s| !s.is_empty())
+    }
+}
+
 /// `C:\Users\Dustin\roost\cad` -> `~\roost\cad`, for subtitles.
 pub fn tilde(path: &str) -> String {
     strip_path_prefix(path, &home()).map_or_else(|| path.to_string(), |rest| format!("~{rest}"))
@@ -145,6 +158,13 @@ pub fn data_dir() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn known_folders() {
+        use windows::Win32::UI::Shell::{FOLDERID_Downloads, FOLDERID_Profile};
+        assert!(known_folder(&FOLDERID_Profile).unwrap().eq_ignore_ascii_case(&home()));
+        assert!(std::path::Path::new(&known_folder(&FOLDERID_Downloads).unwrap()).is_dir());
+    }
 
     #[test]
     fn paths() {

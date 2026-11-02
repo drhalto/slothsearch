@@ -2,7 +2,8 @@
 //! when its modified time changes.
 
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 pub const DEFAULT: &str = r#"# SlothSearch settings. Saved changes apply the next time the launcher opens.
@@ -131,25 +132,39 @@ pub fn modified() -> Option<SystemTime> {
 }
 
 /// Loads the config, writing the commented default first if there isn't one.
-/// A file that doesn't parse falls back to defaults and returns the error to show.
+/// A file that doesn't parse or can't be read falls back to defaults and returns the
+/// error to show; the file itself is left alone.
 pub fn load() -> (Config, Option<String>) {
-    let p = path();
-    let text = match std::fs::read_to_string(&p) {
+    read(&path()).unwrap_or_else(|e| (expand(Config::default()), Some(e)))
+}
+
+/// Like `load`, but a file that's there and can't be read (saved as UTF-16, locked by an
+/// editor mid-save) is an Err, so a reload can keep the settings it already has.
+pub fn read(p: &Path) -> Result<(Config, Option<String>), String> {
+    let text = match std::fs::read_to_string(p) {
         Ok(t) => t,
-        Err(_) => {
-            let _ = std::fs::write(&p, DEFAULT);
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            let _ = std::fs::write(p, DEFAULT);
             DEFAULT.to_string()
         }
+        Err(e) if e.kind() == ErrorKind::InvalidData => return Err("config.toml isn't UTF-8. Save it as UTF-8".into()),
+        Err(e) => return Err(format!("Couldn't read config.toml: {e}")),
     };
-    let (mut c, err) = match toml::from_str::<Raw>(&text) {
+    // Notepad's "UTF-8 with BOM".
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(&text);
+    let (c, err) = match toml::from_str::<Raw>(text) {
         Ok(raw) => (raw.over(Config::default()), None),
         Err(e) => (Config::default(), Some(format!("config.toml: {}", e.message().trim()))),
     };
+    Ok((expand(c), err))
+}
+
+fn expand(mut c: Config) -> Config {
     let home = crate::util::home();
     for e in &mut c.exclude {
         *e = e.replace("%USERPROFILE%", &home);
     }
-    (c, err)
+    c
 }
 
 /// A parsed hotkey: Win32 MOD_* flags and a virtual-key code.
@@ -216,5 +231,29 @@ mod tests {
         assert_eq!(parse_hotkey("Alt+Backquote"), Some(Hotkey { mods: 1, vk: 0xC0 }));
         assert_eq!(parse_hotkey("Win+F5"), Some(Hotkey { mods: 8, vk: 0x74 }));
         assert_eq!(parse_hotkey("Alt+Nope"), None);
+    }
+
+    #[test]
+    fn unreadable_file_is_kept() {
+        let dir = std::env::temp_dir().join(format!("slothsearch-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("config.toml");
+
+        // Saved as UTF-16 (Notepad's "Unicode"): an error, and the file stays as it was.
+        let mut utf16 = vec![0xFF, 0xFE];
+        utf16.extend("hotkey = \"Ctrl+Space\"\n".encode_utf16().flat_map(u16::to_le_bytes));
+        std::fs::write(&p, &utf16).unwrap();
+        assert!(read(&p).is_err());
+        assert_eq!(std::fs::read(&p).unwrap(), utf16);
+
+        // UTF-8 with a BOM reads fine.
+        std::fs::write(&p, "\u{FEFF}hotkey = \"Ctrl+Space\"\n").unwrap();
+        assert_eq!(read(&p).unwrap().0.hotkey, "Ctrl+Space");
+
+        // Missing: the commented default gets written.
+        std::fs::remove_file(&p).unwrap();
+        assert_eq!(read(&p).unwrap().0.hotkey, "Alt+Space");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), DEFAULT);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
