@@ -55,6 +55,10 @@ Needs Windows 11 (or 10 with WebView2) and Everything 1.4 running.
   (the active tab), and Enter on a folder navigates that same window. Backspace on an empty box
   searches everywhere instead.
 - **Windows:** Alt+` (or `type:window`) lists open windows in Alt+Tab order.
+- **Colors:** Ctrl+Shift+P picks one off the screen, or type `#3b82f6` / `rgb(59, 130, 246)`.
+  Under it come colors that go with it (complementary, analogous, triadic) and lighter and
+  darker versions, worked out in OKLCH so they keep the lightness you see. Enter copies HEX,
+  Ctrl+R RGB, Ctrl+H HSL; Ctrl+Enter on a palette color builds a palette from that one.
 - **Preview pane:** text files show their first lines, images and videos show Explorer's
   thumbnail, and HTML, Markdown, SVG and PDF render live in WebView2 (scripts off). Typed URLs,
   `localhost:3000` included, render the live page after a short pause.

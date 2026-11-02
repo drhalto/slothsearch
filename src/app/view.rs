@@ -888,10 +888,9 @@ impl SlothSearch {
             p.galley(pos2(cx - g.size().x / 2.0, y + 52.0), g, pal.text);
             p.text(pos2(cx, y + 116.0), Align2::CENTER_CENTER, "Enter copies the answer", regular(12.0), pal.faint);
             return;
-        } else if let Target::Color { rgb } = item.target {
-            let box_rect = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), 176.0));
-            swatch(ui, rgb, box_rect, pal);
-            y = box_rect.bottom() + 16.0;
+        } else if let Target::Color { rgb, base } = item.target {
+            self.color_preview(ui, &item, rgb, base, rect);
+            return;
         } else if let Some(lines) = text_lines {
             let box_rect = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), 176.0));
             p.rect_filled(box_rect, 8.0, pal.code_bg);
@@ -996,30 +995,85 @@ impl SlothSearch {
             Target::Url { url } => rows.push(("Opens", url.trim_start_matches("everything:").to_string())),
             Target::Web { .. } => rows.push(("Opens", "your default browser".into())),
             Target::Complete { query } => rows.push(("Search", query.trim().to_string())),
-            Target::Calc { .. } => {}
-            Target::Color { rgb } => {
-                use crate::colorpick::{contrast, hex, hsl, rgb as rgb_text};
-                rows.push(("HEX", hex(*rgb)));
-                rows.push(("RGB", rgb_text(*rgb)));
-                rows.push(("HSL", hsl(*rgb)));
-                let (w, b) = (contrast(*rgb, [255; 3]), contrast(*rgb, [0; 3]));
-                rows.push(("Contrast", format!("{w:.1}:1 on white \u{00B7} {b:.1}:1 on black")));
+            // These have previews of their own.
+            Target::Calc { .. } | Target::Color { .. } => {}
+        }
+        detail_rows(&p, pal, rect, y, rows);
+    }
+
+    /// A color: a band of it with its HEX written on it (in whichever of black or white
+    /// reads better), the palette that goes with it as two strips (a click selects that
+    /// row), then its values.
+    fn color_preview(&mut self, ui: &Ui, item: &Item, rgb: [u8; 3], base: Option<[u8; 3]>, rect: Rect) {
+        use crate::colorpick::{contrast, harmonies, hex, hsl, ramp, rgb as rgb_text};
+        let pal = self.pal;
+        let p = ui.painter().clone();
+        let band = Rect::from_min_size(pos2(rect.left(), rect.top() + 4.0), vec2(rect.width(), 88.0));
+        swatch(ui, rgb, band, pal);
+        let ink = if contrast(rgb, [255; 3]) >= contrast(rgb, [0; 3]) { Color32::WHITE } else { Color32::BLACK };
+        p.text(band.left_bottom() + vec2(14.0, -12.0), Align2::LEFT_BOTTOM, hex(rgb), semibold(20.0), ink);
+        let role = if base.is_some() { item.subtitle.as_str() } else { "Your color" };
+        p.text(band.right_bottom() + vec2(-14.0, -15.0), Align2::RIGHT_BOTTOM, role, regular(12.5), ink);
+        let mut y = band.bottom() + 14.0;
+
+        // The palette is always the base color's, so it holds still while you move through it.
+        let origin = base.unwrap_or(rgb);
+        let mut strips = Vec::new();
+        let mates: Vec<[u8; 3]> = std::iter::once(origin).chain(harmonies(origin).into_iter().map(|m| m.rgb)).collect();
+        if mates.len() > 1 {
+            strips.push(("Palette", mates));
+        }
+        strips.push(("Lighter and darker", ramp(origin)));
+        let mut pick = None;
+        for (si, (label, colors)) in strips.iter().enumerate() {
+            p.text(pos2(rect.left(), y), Align2::LEFT_TOP, *label, regular(11.5), pal.faint);
+            y += 18.0;
+            let (gap, n) = (6.0, colors.len() as f32);
+            let w = (rect.width() - gap * (n - 1.0)) / n;
+            for (i, &c) in colors.iter().enumerate() {
+                let r = Rect::from_min_size(pos2(rect.left() + i as f32 * (w + gap), y), vec2(w, 28.0));
+                let resp = ui.interact(r, egui::Id::new(("palette-chip", si, i)), Sense::click());
+                resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, hex(c)));
+                swatch(ui, c, r, pal);
+                if c == rgb {
+                    p.rect_stroke(r.expand(2.5), 9.0, Stroke::new(2.0, pal.text), StrokeKind::Outside);
+                } else if resp.hovered() {
+                    p.rect_stroke(r.expand(2.5), 9.0, Stroke::new(1.5, pal.dim), StrokeKind::Outside);
+                }
+                if resp.on_hover_text(hex(c)).clicked() {
+                    pick = Some(c);
+                }
+            }
+            y += 28.0 + 16.0;
+        }
+        if let Some(c) = pick {
+            let row = self.flat.iter().position(|&(s, i)| matches!(self.sections[s].items[i].target, Target::Color { rgb, .. } if rgb == c));
+            if let Some(i) = row {
+                self.select(i);
             }
         }
-        for (label, value) in rows {
-            if y > rect.bottom() - 16.0 {
-                break;
-            }
-            p.text(pos2(rect.left(), y), Align2::LEFT_TOP, label, regular(12.0), pal.faint);
-            let mut job = LayoutJob::simple(value, regular(12.5), pal.text, rect.width() - 76.0);
-            job.wrap.max_rows = 3;
-            job.wrap.break_anywhere = true;
-            job.wrap.overflow_character = Some('…');
-            let g = p.layout_job(job);
-            let h = g.size().y;
-            p.galley(pos2(rect.left() + 76.0, y - 1.0), g, pal.text);
-            y += h.max(16.0) + 7.0;
+
+        let (on_white, on_black) = (contrast(rgb, [255; 3]), contrast(rgb, [0; 3]));
+        let mut rows = vec![
+            ("HEX", hex(rgb)),
+            ("RGB", rgb_text(rgb)),
+            ("HSL", hsl(rgb)),
+            ("Contrast", format!("{on_white:.1}:1 on white \u{00B7} {on_black:.1}:1 on black")),
+        ];
+        if let Some(b) = base {
+            // Hue harmonies share your color's lightness, so they're for side by side, not
+            // text on top: say so (WCAG: 4.5:1 for text, 3:1 for large text and icons).
+            let c = contrast(rgb, b);
+            let use_ = if c >= 4.5 {
+                "fine for text"
+            } else if c >= 3.0 {
+                "large text only"
+            } else {
+                "not for text on it"
+            };
+            rows.push(("With yours", format!("{c:.1}:1 against {}, {use_}", hex(b))));
         }
+        detail_rows(&p, pal, rect, y + 2.0, rows);
     }
 
     fn text_preview(&mut self, path: &str, size: Option<u64>) -> Option<Vec<String>> {
@@ -1286,6 +1340,24 @@ impl SlothSearch {
         {
             self.filter_menu = false;
         }
+    }
+}
+
+/// Label and value lines under a preview, down to the bottom of `rect`.
+fn detail_rows(p: &egui::Painter, pal: Palette, rect: Rect, mut y: f32, rows: Vec<(&str, String)>) {
+    for (label, value) in rows {
+        if y > rect.bottom() - 16.0 {
+            break;
+        }
+        p.text(pos2(rect.left(), y), Align2::LEFT_TOP, label, regular(12.0), pal.faint);
+        let mut job = LayoutJob::simple(value, regular(12.5), pal.text, rect.width() - 76.0);
+        job.wrap.max_rows = 3;
+        job.wrap.break_anywhere = true;
+        job.wrap.overflow_character = Some('…');
+        let g = p.layout_job(job);
+        let h = g.size().y;
+        p.galley(pos2(rect.left() + 76.0, y - 1.0), g, pal.text);
+        y += h.max(16.0) + 7.0;
     }
 }
 

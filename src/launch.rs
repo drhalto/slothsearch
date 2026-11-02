@@ -32,6 +32,8 @@ pub enum Act {
     /// A color's other notations (Open copies the hex).
     CopyRgb,
     CopyHsl,
+    /// A palette color: make it the color searched for, with a palette of its own.
+    Rebase,
     Properties,
     Editor,
     Terminal,
@@ -114,10 +116,13 @@ pub fn actions(item: &Item, scope: Option<&Scope>) -> Vec<Action> {
         }
         Target::Command { .. } => v.push(a(Act::Open, "Run", "Enter", glyph::RETURN)),
         Target::Calc { .. } => v.push(a(Act::Open, "Copy answer", "Enter", glyph::COPY)),
-        Target::Color { .. } => {
+        Target::Color { base, .. } => {
             v.push(a(Act::Open, "Copy HEX", "Enter", glyph::COPY));
             v.push(a(Act::CopyRgb, "Copy RGB", "Ctrl+R", glyph::COPY));
             v.push(a(Act::CopyHsl, "Copy HSL", "Ctrl+H", glyph::COPY));
+            if base.is_some() {
+                v.push(a(Act::Rebase, "Build a palette from this", "Ctrl+Enter", glyph::PALETTE));
+            }
         }
         Target::Url { url } if url.starts_with("everything:") => v.push(a(Act::Open, "Open in Everything", "Enter", glyph::SEARCH)),
         Target::Url { .. } => {
@@ -182,7 +187,12 @@ pub fn run(act: Act, item: &Item, env: &Env) -> Outcome {
             _ => Outcome::Error("Clipboard is busy".into()),
         },
         Act::CopyRgb | Act::CopyHsl => match t {
-            Target::Color { rgb } => copied(&if act == Act::CopyRgb { crate::colorpick::rgb(*rgb) } else { crate::colorpick::hsl(*rgb) }),
+            Target::Color { rgb, .. } => copied(&if act == Act::CopyRgb { crate::colorpick::rgb(*rgb) } else { crate::colorpick::hsl(*rgb) }),
+            _ => Outcome::Error("Not a color".into()),
+        },
+        // Search for this color instead, which brings up its own palette.
+        Act::Rebase => match t {
+            Target::Color { rgb, .. } => Outcome::SetQuery(crate::colorpick::hex(*rgb)),
             _ => Outcome::Error("Not a color".into()),
         },
         Act::Properties => match t.path() {
@@ -254,7 +264,7 @@ fn open(item: &Item, env: &Env) -> Outcome {
             None => Outcome::Error("Unknown command".into()),
         },
         Target::Calc { copy } => copied(copy),
-        Target::Color { rgb } => copied(&crate::colorpick::hex(*rgb)),
+        Target::Color { rgb, .. } => copied(&crate::colorpick::hex(*rgb)),
         Target::Url { url } => match url.strip_prefix("everything:") {
             Some(search) => {
                 let ok = Command::new(everything_exe()).arg("-search").arg(search).spawn().is_ok();

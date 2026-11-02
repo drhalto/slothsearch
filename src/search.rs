@@ -678,8 +678,16 @@ impl Engine {
             out.push(Section { title: "Calculator".into(), items: vec![item] });
         }
         if let Some(c) = crate::colorpick::parse(q) {
-            let item = Item::new(Kind::Color, crate::colorpick::hex(c), crate::colorpick::rgb(c), Icon::Swatch(c), Target::Color { rgb: c });
-            out.push(Section { title: "Color".into(), items: vec![item] });
+            use crate::colorpick::{harmonies, hex, rgb, shades};
+            let color = |rgb: [u8; 3], sub: String, base| Item::new(Kind::Color, hex(rgb), sub, Icon::Swatch(rgb), Target::Color { rgb, base });
+            out.push(Section { title: "Color".into(), items: vec![color(c, rgb(c), None)] });
+            // A palette to go with it, one row per color so each can be copied.
+            for (title, mates) in [("Goes well with", harmonies(c)), ("Lighter and darker", shades(c))] {
+                if !mates.is_empty() {
+                    let items = mates.into_iter().map(|m| color(m.rgb, m.role.into(), Some(c))).collect();
+                    out.push(Section { title: title.into(), items });
+                }
+            }
         }
         if let Some(url) = as_url(q, &self.cfg.link_domains) {
             let item = Item::new(Kind::Url, format!("Open {url}"), "Link", Icon::Glyph(glyph::LINK), Target::Url { url });

@@ -45,8 +45,13 @@ pub enum Target {
     Window { hwnd: isize, exe: String, aumid: Option<String> },
     Command { id: String },
     Calc { copy: String },
-    /// A color typed as `#hex` / `rgb()`, or picked off the screen.
-    Color { rgb: [u8; 3] },
+    /// A color typed as `#hex` / `rgb()`, or picked off the screen; or, with `base`, one
+    /// from the palette that goes with that color.
+    Color {
+        rgb: [u8; 3],
+        #[serde(default)]
+        base: Option<[u8; 3]>,
+    },
     Url { url: String },
     Web { query: String },
     /// Replace the search text (completing a `type:` filter).
@@ -170,4 +175,5 @@ pub mod glyph {
     pub const DELETE: char = '\u{E74D}';
     pub const CHECK: char = '\u{E73E}';
     pub const NOTE: char = '\u{E70B}';
+    pub const PALETTE: char = '\u{E790}';
 }

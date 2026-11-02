@@ -52,13 +52,22 @@ pub fn hsl(c: Rgb) -> String {
     format!("hsl({}, {}%, {}%)", h.round() as i32 % 360, (s * 100.0).round(), (l * 100.0).round())
 }
 
+/// An sRGB channel as linear light, 0 to 1.
+fn linear(v: u8) -> f32 {
+    let v = v as f32 / 255.0;
+    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+}
+
+/// Linear light back to an sRGB channel.
+fn encoded(v: f32) -> u8 {
+    let v = v.clamp(0.0, 1.0);
+    let e = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    (e * 255.0).round() as u8
+}
+
 /// WCAG relative luminance.
 fn luminance(c: Rgb) -> f32 {
-    let lin = |v: u8| {
-        let v = v as f32 / 255.0;
-        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-    };
-    0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+    0.2126 * linear(c[0]) + 0.7152 * linear(c[1]) + 0.0722 * linear(c[2])
 }
 
 /// WCAG contrast ratio between two colors (1 to 21).
@@ -84,6 +93,109 @@ pub fn parse(q: &str) -> Option<Rgb> {
     let inner = q.to_ascii_lowercase().strip_prefix("rgb(")?.strip_suffix(')')?.to_string();
     let v: Vec<u8> = inner.split([',', ' ']).filter(|s| !s.is_empty()).map(|s| s.trim().parse().ok()).collect::<Option<_>>()?;
     (v.len() == 3).then(|| [v[0], v[1], v[2]])
+}
+
+// -----------------------------------------------------------------------------------
+// Palettes
+//
+// Worked out in OKLCH (lightness, chroma, hue, as the eye sees them), so turning the hue
+// keeps the lightness: in HSL a yellow and a blue at the same "lightness" look nothing
+// alike, and a palette made that way has one color shouting over the rest.
+
+/// A color that goes with another, and how it's related.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mate {
+    pub rgb: Rgb,
+    pub role: &'static str,
+}
+
+/// Below this chroma a color is a grey: there's no hue to turn.
+const GREY: f32 = 0.02;
+
+/// Colors that go with `c` by hue: the complement, its neighbours, and the triad.
+/// None for greys.
+pub fn harmonies(c: Rgb) -> Vec<Mate> {
+    let [l, ch, h] = oklch(c);
+    if ch < GREY {
+        return Vec::new();
+    }
+    [(180.0, "Complementary"), (-30.0, "Analogous"), (30.0, "Analogous"), (120.0, "Triadic"), (-120.0, "Triadic")]
+        .into_iter()
+        .map(|(turn, role)| Mate { rgb: from_oklch(l, ch, h + f32::to_radians(turn)), role })
+        .collect()
+}
+
+/// Lighter and darker versions of `c`, lightest first, keeping its hue. Near white or
+/// black there's less room, so fewer steps.
+pub fn shades(c: Rgb) -> Vec<Mate> {
+    let [l, ch, h] = oklch(c);
+    let mut out: Vec<Mate> = Vec::new();
+    for (step, role) in [(0.24, "Much lighter"), (0.12, "Lighter"), (-0.12, "Darker"), (-0.24, "Much darker")] {
+        let to = (l + step).clamp(0.06, 0.99);
+        let rgb = from_oklch(to, ch, h);
+        // A step squashed against white or black either doesn't move or repeats the last.
+        if (to - l).abs() >= 0.03 && rgb != c && out.last().is_none_or(|m| m.rgb != rgb) {
+            out.push(Mate { rgb, role });
+        }
+    }
+    out
+}
+
+/// `c` among its shades, lightest to darkest.
+pub fn ramp(c: Rgb) -> Vec<Rgb> {
+    let s = shades(c);
+    let lighter = s.iter().filter(|m| luminance(m.rgb) > luminance(c)).count();
+    let mut v: Vec<Rgb> = s.iter().map(|m| m.rgb).collect();
+    v.insert(lighter, c);
+    v
+}
+
+/// OKLab from sRGB (Björn Ottosson's matrices).
+fn oklab(c: Rgb) -> [f32; 3] {
+    let [r, g, b] = c.map(linear);
+    let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_99 * b).cbrt();
+    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
+    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
+    [
+        0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
+        1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
+        0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,
+    ]
+}
+
+/// Linear sRGB from OKLab; may fall outside 0 to 1.
+fn linear_from_oklab([l, a, b]: [f32; 3]) -> [f32; 3] {
+    let l_ = (l + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
+    let m_ = (l - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
+    let s_ = (l - 0.089_484_18 * a - 1.291_485_5 * b).powi(3);
+    [
+        4.076_741_7 * l_ - 3.307_711_6 * m_ + 0.230_969_94 * s_,
+        -1.268_438 * l_ + 2.609_757_4 * m_ - 0.341_319_38 * s_,
+        -0.004_196_086_3 * l_ - 0.703_418_6 * m_ + 1.707_614_7 * s_,
+    ]
+}
+
+/// Lightness, chroma and hue (radians).
+fn oklch(c: Rgb) -> [f32; 3] {
+    let [l, a, b] = oklab(c);
+    [l, a.hypot(b), b.atan2(a)]
+}
+
+/// Back to sRGB. A hue that can't be that vivid at that lightness keeps its lightness and
+/// hue and loses chroma until it fits, rather than clipping into a different color.
+fn from_oklch(l: f32, c: f32, h: f32) -> Rgb {
+    let at = |c: f32| linear_from_oklab([l, c * h.cos(), c * h.sin()]);
+    let fits = |c: f32| at(c).iter().all(|v| (-0.000_1..=1.000_1).contains(v));
+    let mut c = c;
+    if !fits(c) {
+        let (mut lo, mut hi) = (0.0, c);
+        for _ in 0..24 {
+            let mid = (lo + hi) / 2.0;
+            if fits(mid) { lo = mid } else { hi = mid }
+        }
+        c = lo;
+    }
+    at(c).map(encoded)
 }
 
 // -----------------------------------------------------------------------------------
@@ -344,5 +456,54 @@ mod tests {
         assert_eq!(hsl([128, 128, 128]), "hsl(0, 0%, 50%)");
         assert!((contrast([0, 0, 0], [255, 255, 255]) - 21.0).abs() < 0.01);
         assert!((contrast([0x76, 0x76, 0x76], [255, 255, 255]) - 4.54).abs() < 0.01);
+    }
+
+    #[test]
+    fn oklch_round_trips() {
+        for c in [[0x3B, 0x82, 0xF6], [255, 0, 0], [0, 0, 0], [255, 255, 255], [0x12, 0xA4, 0x5B], [200, 180, 20]] {
+            let [l, ch, h] = oklch(c);
+            let back = from_oklch(l, ch, h);
+            assert!(c.iter().zip(back).all(|(a, b)| a.abs_diff(b) <= 1), "{c:?} -> {back:?}");
+        }
+    }
+
+    #[test]
+    fn harmonies_turn_the_hue_and_keep_the_lightness() {
+        let blue = [0x3B, 0x82, 0xF6];
+        let mates = harmonies(blue);
+        let roles: Vec<&str> = mates.iter().map(|m| m.role).collect();
+        assert_eq!(roles, ["Complementary", "Analogous", "Analogous", "Triadic", "Triadic"]);
+        let [l, _, h] = oklch(blue);
+        for m in &mates {
+            let [ml, _, mh] = oklch(m.rgb);
+            assert!((ml - l).abs() < 0.01, "{m:?} lightness {ml} vs {l}");
+            assert_ne!(m.rgb, blue);
+            let _ = mh;
+        }
+        // The complement sits opposite: an orange-yellow for this blue.
+        let [_, _, ch] = oklch(mates[0].rgb);
+        let turned = (ch - h).rem_euclid(std::f32::consts::TAU).to_degrees();
+        assert!((turned - 180.0).abs() < 3.0, "turned {turned}");
+        let [r, g, b] = mates[0].rgb;
+        assert!(r > b && g > b, "{:?}", mates[0].rgb);
+        // Greys have no hue to turn.
+        assert!(harmonies([128, 128, 128]).is_empty());
+        assert!(harmonies([0x1E, 0x1E, 0x22]).is_empty());
+    }
+
+    #[test]
+    fn shades_go_lighter_then_darker() {
+        for c in [[0x3B, 0x82, 0xF6], [128, 128, 128], [250, 250, 250], [5, 5, 5]] {
+            let s = shades(c);
+            let l: Vec<f32> = s.iter().map(|m| oklch(m.rgb)[0]).collect();
+            assert!(l.windows(2).all(|w| w[0] > w[1]), "{c:?}: {l:?}");
+            assert!(s.iter().all(|m| m.rgb != c));
+        }
+        assert_eq!(shades([0x3B, 0x82, 0xF6]).len(), 4);
+        // The ramp puts the color itself in the middle.
+        let blue = [0x3B, 0x82, 0xF6];
+        let r = ramp(blue);
+        assert_eq!((r.len(), r[2]), (5, blue));
+        assert!(r.windows(2).all(|w| luminance(w[0]) > luminance(w[1])));
     }
 }
