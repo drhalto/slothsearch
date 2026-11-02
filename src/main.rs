@@ -17,6 +17,7 @@ mod icons;
 mod launch;
 mod model;
 mod overlay;
+mod projectcard;
 mod projects;
 mod record;
 mod search;
@@ -111,6 +112,21 @@ fn cli(cmd: &str, rest: &[String]) {
             }
         }
         "calc" => println!("{:?}", calc::eval(&text)),
+        // A repo's preview card, as the launcher would show it.
+        "card" => {
+            let (cfg, _) = config::load();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (builder, _) = projectcard::spawn(move |c| {
+                let _ = tx.send(c);
+            });
+            let t = std::time::Instant::now();
+            let git = std::path::Path::new(&text).join(".git").exists();
+            let _ = builder.send(projectcard::Job::Card { folder: text.clone(), git, notes: cfg.notes });
+            match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+                Ok(c) => println!("{:?}  note {:?}  branch {:?}  remote {:?}\n\n{}", t.elapsed(), c.note, c.branch, c.remote, c.markdown),
+                Err(_) => println!("no card after 15 s"),
+            }
+        }
         "snip" => snip::snip(|o| println!("{o:?}")),
         // Replays typing through the background worker, as the window does.
         "typing" => {
@@ -152,6 +168,6 @@ fn cli(cmd: &str, rest: &[String]) {
                 Err(e) => println!("{:?} {e:?}", t.elapsed()),
             }
         }
-        _ => println!("usage: slothsearch [query <text> | apps [filter] | wins | calc <expr>]"),
+        _ => println!("usage: slothsearch [query <text> | apps [filter] | wins | calc <expr> | card <repo folder>]"),
     }
 }

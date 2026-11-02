@@ -45,6 +45,8 @@ pub enum Act {
     MoveDown,
     Rename,
     Recycle,
+    /// A repo's project note (the app knows which note that is).
+    OpenNote,
 }
 
 pub struct Action {
@@ -155,7 +157,7 @@ pub fn run(act: Act, item: &Item, env: &Env) -> Outcome {
     let t = &item.target;
     match act {
         Act::Forget => Outcome::Forget,
-        Act::Favorite | Act::MoveUp | Act::MoveDown | Act::Rename | Act::Recycle => Outcome::Error("Not available here".into()),
+        Act::Favorite | Act::MoveUp | Act::MoveDown | Act::Rename | Act::Recycle | Act::OpenNote => Outcome::Error("Not available here".into()),
         Act::Open => open(item, env),
         Act::Reveal => match t {
             Target::Project { path } => done(shell(None, path, None)),

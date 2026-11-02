@@ -6,13 +6,16 @@
 //! you asked for that page. Both are native child windows laid over the preview pane and
 //! are dropped after a while hidden, so Edge's helper processes don't linger.
 
+use std::io::Read;
 use std::num::NonZeroIsize;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle};
 use wry::dpi::{PhysicalPosition, PhysicalSize};
 use wry::{Rect, WebContext, WebView, WebViewBuilder};
 
+use crate::projectcard::{Card, without_front_matter};
 use crate::util::{extension, parent};
 
 /// What to put in the preview.
@@ -24,6 +27,8 @@ pub enum Source {
     Markdown(String),
     /// A web address.
     Url(String),
+    /// A repo's card (git, its note, the README). A new Arc means new content.
+    Card(Arc<Card>),
 }
 
 impl Source {
@@ -141,6 +146,8 @@ impl WebPreview {
                 Source::File(p) => view.load_url(&file_url(p)).is_ok(),
                 Source::Url(u) => view.load_url(u).is_ok(),
                 Source::Markdown(p) => render_markdown(p, dark).is_some_and(|page| view.load_url(&file_url(&page)).is_ok()),
+                Source::Card(c) => write_page("card.html", &page(&to_html(&c.markdown), &c.folder, dark))
+                    .is_some_and(|page| view.load_url(&file_url(&page)).is_ok()),
             };
             self.loaded = ok.then(|| src.clone());
         }
@@ -186,23 +193,39 @@ impl WebPreview {
 /// Renders a Markdown file to an HTML page in %TEMP% (so relative images still resolve)
 /// and returns that page's path.
 fn render_markdown(path: &str, dark: bool) -> Option<String> {
-    use pulldown_cmark::{Options, Parser, html};
-    let bytes = std::fs::read(path).ok()?;
-    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(2_000_000)]).into_owned();
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).ok()?.take(2_000_000).read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
     // Obsidian/YAML front matter reads as noise in a preview.
-    let body_text = match text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n")) {
-        Some(rest) => rest.split_once("\n---").map_or(text.as_str(), |(_, after)| after.trim_start_matches(['-', '\r', '\n'])),
-        None => text.as_str(),
-    };
+    write_page("markdown.html", &page(&to_html(without_front_matter(&text)), parent(path), dark))
+}
+
+fn to_html(markdown: &str) -> String {
+    use pulldown_cmark::{Options, Parser, html};
     let mut body = String::new();
-    html::push_html(&mut body, Parser::new_ext(body_text, Options::all()));
-    let (fg, dim, bg, code_bg, border, link) = if dark {
-        ("#ececf0", "#a0a0aa", "#1e1e22", "#2a2a30", "#3a3a42", "#9cc7ff")
+    html::push_html(&mut body, Parser::new_ext(markdown, Options::all()));
+    body
+}
+
+/// Writes a preview page to %TEMP% and returns its path.
+fn write_page(name: &str, page: &str) -> Option<String> {
+    let dir = std::env::temp_dir().join("slothsearch-preview");
+    let _ = std::fs::create_dir_all(&dir);
+    let out = dir.join(name);
+    std::fs::write(&out, page).ok()?;
+    Some(out.to_string_lossy().into_owned())
+}
+
+/// A whole page around `body`, styled like the launcher; relative links and images
+/// resolve against the folder `base`.
+fn page(body: &str, base: &str, dark: bool) -> String {
+    let (fg, dim, bg, code_bg, border, link, warn) = if dark {
+        ("#ececf0", "#a0a0aa", "#1e1e22", "#2a2a30", "#3a3a42", "#9cc7ff", "#fcc14d")
     } else {
-        ("#1b1b1f", "#5e5e67", "#fbfbfd", "#efeff3", "#dcdce2", "#0b5cad")
+        ("#1b1b1f", "#5e5e67", "#fbfbfd", "#efeff3", "#dcdce2", "#0b5cad", "#8a5100")
     };
-    let base = file_url(&format!("{}\\", parent(path)));
-    let page = format!(
+    let base = file_url(&format!("{}\\", base.trim_end_matches('\\')));
+    format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><base href="{base}"><style>
 :root {{ color-scheme: {scheme}; }}
 html, body {{ background: {bg}; }}
@@ -211,6 +234,7 @@ h1, h2, h3, h4 {{ line-height: 1.25; margin: 1.1em 0 .45em; }}
 h1 {{ font-size: 1.5em; }} h2 {{ font-size: 1.25em; }} h3 {{ font-size: 1.08em; }}
 p, ul, ol, table, pre, blockquote {{ margin: 0 0 .8em; }}
 ul, ol {{ padding-left: 1.4em; }}
+li:has(> input[type=checkbox]:first-child) {{ list-style: none; margin-left: -1.3em; }}
 a {{ color: {link}; }}
 code {{ font: 12.5px "Cascadia Mono", Consolas, monospace; background: {code_bg}; padding: .1em .3em; border-radius: 4px; }}
 pre {{ background: {code_bg}; padding: 10px 12px; border-radius: 6px; overflow: auto; }}
@@ -222,14 +246,20 @@ input[type=checkbox] {{ margin-right: .4em; }}
 ::-webkit-scrollbar {{ width: 8px; height: 8px; }}
 ::-webkit-scrollbar-thumb {{ background: {border}; border-radius: 4px; }}
 ::-webkit-scrollbar-track {{ background: transparent; }}
+.git {{ display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px; }}
+.pill {{ font-size: 12px; padding: 1px 9px; border-radius: 999px; background: {code_bg}; color: {dim}; }}
+.pill.b {{ color: {fg}; font-weight: 600; }}
+.pill.warn {{ color: {warn}; }}
+.pill.accent {{ color: {link}; }}
+.commit {{ color: {fg}; font-size: 12.5px; }} .commit span {{ color: {dim}; }}
+h3.card {{ font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: {dim}; margin: 1.3em 0 .5em; }}
+.last p {{ display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5; overflow: hidden; }}
+details {{ margin: .9em 0; border-top: 1px solid {border}; padding-top: .7em; }}
+summary {{ cursor: pointer; font-weight: 600; margin-bottom: .5em; }}
+.src {{ color: {dim}; font-size: 12px; }}
 </style></head><body>{body}</body></html>"#,
         scheme = if dark { "dark" } else { "light" },
-    );
-    let dir = std::env::temp_dir().join("slothsearch-preview");
-    let _ = std::fs::create_dir_all(&dir);
-    let out = dir.join("markdown.html");
-    std::fs::write(&out, page).ok()?;
-    Some(out.to_string_lossy().into_owned())
+    )
 }
 
 #[cfg(test)]

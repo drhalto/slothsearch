@@ -169,4 +169,5 @@ pub mod glyph {
     pub const SNIP: char = '\u{F406}';
     pub const DELETE: char = '\u{E74D}';
     pub const CHECK: char = '\u{E73E}';
+    pub const NOTE: char = '\u{E70B}';
 }

@@ -31,6 +31,7 @@ Needs Windows 11 (or 10 with WebView2) and Everything 1.4 running.
 | Ctrl+Enter | Show in Explorer |
 | Ctrl+K | All actions for the selected row |
 | Ctrl+E / Ctrl+T / Ctrl+L | Open in VS Code / Terminal / start Claude Code there |
+| Ctrl+O | Open the project note (repos and folders that have one) |
 | Ctrl+Shift+C / Ctrl+Shift+F | Copy path / copy the file itself |
 | Ctrl+Shift+Enter | Run as administrator |
 | Alt+Enter | Properties |
@@ -56,7 +57,12 @@ Needs Windows 11 (or 10 with WebView2) and Everything 1.4 running.
 - **Windows:** Alt+` (or `type:window`) lists open windows in Alt+Tab order.
 - **Preview pane:** text files show their first lines, images and videos show Explorer's
   thumbnail, and HTML, Markdown, SVG and PDF render live in WebView2 (scripts off). Typed URLs,
-  `localhost:3000` included, render the live page after a short pause. Repos show their README.
+  `localhost:3000` included, render the live page after a short pause.
+- **Picking a project back up:** a repo shows its branch, uncommitted changes, commits to push
+  or pull and the last commit, then its README. Point `notes` in settings at a notes folder (an
+  Obsidian vault works) and any repo or folder whose note names it in front matter
+  (`path: C:\Code\my-app`) also shows that note's newest Log entry and Next steps, with Current
+  state folded below. Ctrl+O opens the note.
 - **Learns:** whatever you pick for a search ranks first for that search next time.
 - **Everything syntax works:** `ext:pdf invoice`, `*.rs`, `dm:today`, paths.
 - Built-in commands: lock, sleep, restart (asks twice), Settings pages, admin tools, folders,
@@ -66,8 +72,9 @@ Needs Windows 11 (or 10 with WebView2) and Everything 1.4 running.
 
 `%APPDATA%\SlothSearch\config.toml` (search "SlothSearch settings" or press Ctrl+, in the
 launcher). Hotkeys, Explorer scoping, the web search engine, theme, domain endings for names on
-your own network (`link_domains`, so `nas.home` opens as a link), and the folders kept out of
-file results (node_modules, build caches, AppData...). Changes apply the next time it opens.
+your own network (`link_domains`, so `nas.home` opens as a link), the folders kept out of
+file results (node_modules, build caches, AppData...), and the project notes folder (`notes`).
+Changes apply the next time it opens.
 
 ## How it works
 

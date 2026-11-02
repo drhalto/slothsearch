@@ -1,6 +1,7 @@
 //! The launcher window: search box, results, preview, actions, footer.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -19,6 +20,7 @@ use crate::history::History;
 use crate::icons::{self, Image};
 use crate::launch::{self, Act, Outcome};
 use crate::model::{Icon, IconKey, Item, Kind, Section, Target, glyph};
+use crate::projectcard;
 use crate::projects::{self, Project};
 use crate::search::Engine;
 use crate::shell::{self, Event as ShellEvent, MARGIN, Mode, TrayCmd, WIN_W};
@@ -51,6 +53,16 @@ pub enum Msg {
     Snipped(Option<Result<Snipped, String>>),
     /// A Recycle Bin move finished: the paths, and Ok(false) if Windows' prompt was cancelled.
     Recycled(Vec<String>, Result<bool, String>),
+    /// A repo's preview card is ready.
+    Card(projectcard::Card),
+}
+
+/// A repo's card: the newest one built, and when it was asked for and built.
+#[derive(Default)]
+struct CardSlot {
+    card: Option<Arc<projectcard::Card>>,
+    asked: Option<Instant>,
+    built: Option<Instant>,
 }
 
 /// The screen tools that take over the whole screen while the launcher steps aside.
@@ -123,6 +135,7 @@ fn combo(key: Key, m: Modifiers) -> Option<String> {
         Key::H => "H",
         Key::P => "P",
         Key::S => "S",
+        Key::O => "O",
         _ => return None,
     };
     let mut s = String::new();
@@ -211,6 +224,11 @@ pub struct SlothSearch {
 
     text_previews: HashMap<String, Option<Vec<String>>>,
     folder_counts: HashMap<String, Option<usize>>,
+    /// Preview cards for repos and noted folders, by path; the thread that builds them;
+    /// and which folders have a project note.
+    cards: HashMap<String, CardSlot>,
+    card_builder: Sender<projectcard::Job>,
+    notes: projectcard::Notes,
     reload_pending: bool,
     /// Test hook: SLOTHSEARCH_SHOW="query" opens the launcher on start with that search.
     demo: Option<String>,
@@ -270,6 +288,13 @@ impl SlothSearch {
             let (tx, ctx) = (tx.clone(), ctx.clone());
             icons::Loader::spawn(move |key, size, img| {
                 let _ = tx.send(Msg::Icon(key, size, img));
+                ctx.request_repaint();
+            })
+        };
+        let (card_builder, notes) = {
+            let (tx, ctx) = (tx.clone(), ctx.clone());
+            projectcard::spawn(move |card| {
+                let _ = tx.send(Msg::Card(card));
                 ctx.request_repaint();
             })
         };
@@ -335,6 +360,9 @@ impl SlothSearch {
             cfg_mtime: config::modified(),
             text_previews: HashMap::new(),
             folder_counts: HashMap::new(),
+            cards: HashMap::new(),
+            card_builder,
+            notes,
             reload_pending: false,
             demo: std::env::var("SLOTHSEARCH_SHOW").ok(),
             web: WebPreview::new(hwnd),
@@ -371,6 +399,8 @@ impl SlothSearch {
             self.projects_at = Some(Instant::now());
             let _ = self.everything.send(everything::Job::Projects);
         }
+        // Which folders have notes, so they're known before one is selected.
+        let _ = self.card_builder.send(projectcard::Job::Index { notes: self.engine.cfg.notes.clone() });
     }
 
     fn check_health(&mut self) {
@@ -398,9 +428,42 @@ impl SlothSearch {
         };
         shell::update_settings(&cfg.hotkey, &cfg.switcher_hotkey, cfg.explorer_scope);
         self.pal = theme::palette(theme::wants_dark(&cfg.theme));
+        if cfg.notes != self.engine.cfg.notes {
+            self.cards.clear();
+        }
         self.engine.cfg = cfg;
         self.warning = err;
         self.built = None;
+    }
+
+    /// Whether a row gets a card instead of the usual preview: every repo, and folders
+    /// with a project note. Some(true) when it's a repo (git has something to say).
+    fn card_kind(&self, item: &Item) -> Option<bool> {
+        match &item.target {
+            Target::Project { .. } => Some(true),
+            Target::Path { path, folder: true } if self.notes.has(path) => Some(false),
+            _ => None,
+        }
+    }
+
+    /// The card for a folder, if one's been built. Asks for a fresh one when it's missing
+    /// or more than ten seconds old, so git's numbers keep up while you look.
+    fn card(&mut self, folder: &str, git: bool) -> Option<Arc<projectcard::Card>> {
+        let slot = self.cards.entry(folder.to_string()).or_default();
+        let stale = slot.built.is_none_or(|b| b.elapsed() > Duration::from_secs(10));
+        let asking = slot.asked.is_some_and(|a| a.elapsed() < Duration::from_secs(3));
+        if stale && !asking {
+            slot.asked = Some(Instant::now());
+            let notes = self.engine.cfg.notes.clone();
+            let _ = self.card_builder.send(projectcard::Job::Card { folder: folder.to_string(), git, notes });
+        }
+        slot.card.clone()
+    }
+
+    /// The project note for a repo or folder row, once its card has found one.
+    fn note_for(&self, item: &Item) -> Option<String> {
+        let path = row_path(item)?;
+        self.cards.get(path)?.card.as_ref()?.note.clone()
     }
 
     fn handle(&mut self, msg: Msg, ctx: &egui::Context) {
@@ -537,6 +600,14 @@ impl SlothSearch {
                     Ok(false) => ("Nothing was deleted".into(), Instant::now(), false),
                     Err(e) => (e, Instant::now(), true),
                 });
+            }
+            Msg::Card(card) => {
+                let slot = self.cards.entry(card.folder.clone()).or_default();
+                slot.built = Some(Instant::now());
+                // The same content keeps the same Arc, so the preview doesn't reload.
+                if slot.card.as_deref() != Some(&card) {
+                    slot.card = Some(Arc::new(card));
+                }
             }
         }
     }
@@ -795,6 +866,14 @@ impl SlothSearch {
             Act::Recycle => {
                 let paths = self.chosen(&item);
                 self.recycle(paths);
+                return;
+            }
+            Act::OpenNote => {
+                match self.note_for(&item) {
+                    Some(note) if projectcard::open_note(&note) => self.begin_hide(),
+                    Some(_) => self.toast = Some(("Couldn't open the note".into(), Instant::now(), true)),
+                    None => self.toast = Some(("No project note for this repo".into(), Instant::now(), true)),
+                }
                 return;
             }
             // With several rows picked, copying takes all of them.

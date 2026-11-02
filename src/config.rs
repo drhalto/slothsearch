@@ -60,6 +60,12 @@ exclude = [
 # link (over http). Example: ["home", "lan"] makes "nas.home" a link.
 link_domains = []
 
+# A notes folder (an Obsidian vault works) for picking projects back up. A note whose
+# front matter has a `path:` line naming a repo's folder shows when that repo is
+# selected: its newest ## Log entry and ## Next steps, then ## Current state and the
+# README. Ctrl+O opens the note. "" turns it off. Example: notes = 'C:\Users\you\Notes'
+notes = ""
+
 # How many files and folders to show for a normal search.
 max_files = 12
 
@@ -77,6 +83,8 @@ pub struct Config {
     pub max_files: usize,
     pub theme: String,
     pub link_domains: Vec<String>,
+    /// Project notes to show beside repos ("" for none).
+    pub notes: String,
 }
 
 /// What a config file may contain; anything left out comes from `DEFAULT`.
@@ -90,6 +98,7 @@ struct Raw {
     max_files: Option<usize>,
     theme: Option<String>,
     link_domains: Option<Vec<String>>,
+    notes: Option<String>,
 }
 
 impl Raw {
@@ -103,6 +112,7 @@ impl Raw {
             max_files: self.max_files.unwrap_or(d.max_files).clamp(1, 100),
             theme: self.theme.unwrap_or(d.theme),
             link_domains: self.link_domains.unwrap_or(d.link_domains),
+            notes: self.notes.unwrap_or(d.notes),
         }
     }
 }
@@ -119,6 +129,7 @@ impl Default for Config {
             max_files: raw.max_files.unwrap(),
             theme: raw.theme.unwrap(),
             link_domains: raw.link_domains.unwrap(),
+            notes: raw.notes.unwrap(),
         }
     }
 }

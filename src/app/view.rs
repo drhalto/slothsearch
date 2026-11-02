@@ -378,6 +378,11 @@ impl SlothSearch {
         if !self.engine.history.has(item) {
             v.retain(|a| a.act != Act::Forget);
         }
+        // A repo with a project note: open it, right after Claude Code.
+        if self.note_for(item).is_some() {
+            let at = v.iter().position(|a| a.act == Act::Claude).map_or(v.len(), |i| i + 1);
+            v.insert(at, launch::Action { act: Act::OpenNote, label: "Open project note".into(), keys: "Ctrl+O", glyph: glyph::NOTE });
+        }
         let n = self.marked.len();
         if n > 0 {
             for a in v.iter_mut() {
@@ -806,10 +811,6 @@ impl SlothSearch {
         let local = |p: &str| crate::util::is_local_drive(p);
         match &item.target {
             Target::Path { path, folder: false } if local(path) => Source::for_path(path),
-            Target::Project { path } => {
-                let readme = ["README.md", "readme.md", "Readme.md"].iter().map(|n| format!("{path}\\{n}")).find(|p| std::path::Path::new(p).exists())?;
-                Some(Source::Markdown(readme))
-            }
             Target::Url { url } if url.starts_with("http://") || url.starts_with("https://") => Some(Source::Url(url.clone())),
             _ => None,
         }
@@ -823,28 +824,39 @@ impl SlothSearch {
         let cx = rect.center().x;
 
         // Pages, Markdown, SVG and PDF get the live web preview, with a caption below.
-        if let Some(src) = Self::web_source(&item).filter(|_| !self.web.broken) {
+        // Repos and folders with a project note get their card (git, the note, the
+        // README), built off this thread: Some(None) while it's on its way.
+        let card = match (self.card_kind(&item), row_path(&item)) {
+            (Some(git), Some(path)) => Some(self.card(path, git)),
+            _ => None,
+        };
+        let src = match &card {
+            Some(c) => Some(c.clone().map(Source::Card)),
+            None => Self::web_source(&item).map(Some),
+        };
+        if let Some(src) = src.filter(|_| !self.web.broken) {
             if !self.panel_settled {
                 ui.ctx().request_repaint_after(Duration::from_millis(30));
             }
             let web_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() - 58.0));
             p.rect_filled(web_rect, 8.0, pal.code_bg);
             p.text(web_rect.center(), Align2::CENTER_CENTER, "Loading preview…", regular(12.5), pal.faint);
-            if self.panel_settled {
-                self.web_target = Some((src.clone(), web_rect));
+            if let Some(src) = src
+                && self.panel_settled
+            {
+                self.web_target = Some((src, web_rect));
             }
-            let title = match &src {
-                Source::Markdown(r) if matches!(item.target, Target::Project { .. }) => format!("{} · {}", item.title, crate::util::file_name(r)),
-                _ => item.title.clone(),
-            };
-            let g = truncated(&title, semibold(13.5), pal.text, rect.width());
+            let g = truncated(&item.title, semibold(13.5), pal.text, rect.width());
             p.galley(pos2(rect.left(), web_rect.bottom() + 12.0), g, pal.text);
             let sub = match &item.target {
-                Target::Project { path } => {
-                    let b = projects::branch(path).unwrap_or_default();
-                    let r = projects::web_url(path).map(|u| u.trim_start_matches("https://").to_string()).unwrap_or_default();
-                    [b, r].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ")
-                }
+                // The branch and remote come with the card, so nothing reads .git per frame.
+                Target::Project { path } => match card.flatten() {
+                    Some(c) => {
+                        let r = c.remote.as_deref().map(|u| u.trim_start_matches("https://"));
+                        [c.branch.as_deref(), r].into_iter().flatten().collect::<Vec<_>>().join(" · ")
+                    }
+                    None => tilde(path),
+                },
                 Target::Url { url } => url.clone(),
                 Target::Path { path, .. } => {
                     let mut parts = vec![tilde(crate::util::parent(path))];
